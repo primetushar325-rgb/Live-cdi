@@ -146,7 +146,7 @@ data class SessionSnapshot(
     val sentBytes: Long? = null,
     val reconnectCount: Int = 0,
     val networkConnected: Boolean? = null,
-    val sendQueueBytes: Long? = null,
+    val sendQueueFrames: Long? = null,
     val loopCount: Long = 0L
 ) {
     val isActive: Boolean get() = state !in setOf(StreamState.IDLE, StreamState.STOPPED, StreamState.ERROR)

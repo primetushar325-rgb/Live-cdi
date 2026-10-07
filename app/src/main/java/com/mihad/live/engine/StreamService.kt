@@ -9,13 +9,11 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
-import android.util.Log
 import android.view.TextureView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -92,14 +90,11 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     @Volatile private var lastTransportBytes = 0L
     @Volatile private var lastVideoProgressMs = 0L
     @Volatile private var lastTransportProgressMs = 0L
-    @Volatile private var lastVideoBytes = 0L
-    @Volatile private var lastAudioBytes = 0L
     @Volatile private var encodedVideoBitrateBps: Long? = null
     @Volatile private var encodedAudioBitrateBps: Long? = null
     @Volatile private var previousEncodedVideoBytes = 0L
     @Volatile private var previousEncodedAudioBytes = 0L
     @Volatile private var previousMetricAtMs = 0L
-    @Volatile private var lastDroppedVideoFrames = 0L
     @Volatile private var lastAdaptDroppedFrames = 0L
     @Volatile private var activeRequestFingerprint: String? = null
 
@@ -288,8 +283,6 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 previousMetricAtMs = SystemClock.elapsedRealtime()
                 previousEncodedVideoBytes = stream?.getEncodedVideoBytes() ?: 0
                 previousEncodedAudioBytes = stream?.getEncodedAudioBytes() ?: 0
-                lastVideoBytes = previousEncodedVideoBytes
-                lastAudioBytes = previousEncodedAudioBytes
                 lastEncodedFrames = stream?.getEncodedVideoFrames() ?: 0
                 lastTransportBytes = safeClient()?.getBytesSend() ?: 0
                 lastVideoProgressMs = SystemClock.elapsedRealtime()
@@ -399,7 +392,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                         droppedVideoFrames = null,
                         encodedVideoFrames = null,
                         sentBytes = null,
-                        sendQueueBytes = null,
+                        sendQueueFrames = null,
                         reconnectCount = reconnectCount
                     )
                 }
@@ -464,7 +457,6 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
 
     override fun onNewBitrate(bitrate: Long) {
         uploadBitrateBps = bitrate.takeIf { it >= 0 }
-        adaptBitrateIfNeeded(bitrate)
     }
 
     override fun onCodecError(type: CodecUtil.CodecTypeError, e: android.media.MediaCodec.CodecException) {
@@ -527,7 +519,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 droppedVideoFrames = null,
                 encodedVideoFrames = null,
                 sentBytes = null,
-                sendQueueBytes = null
+                sendQueueFrames = null
             )
         }
         updateNotification()
@@ -602,7 +594,6 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             }
             transition(ENCODER_READY)
             setSnapshot {
-                val canvas = request.canvas()
                 it.copy(
                     state = ENCODER_READY,
                     statusText = "ENGINE READY",
@@ -737,7 +728,6 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         previousMetricAtMs = now
         val client = active.getStreamClient()
         val canvas = request.canvas()
-        val snapshot = mutableSnapshot.value
         setSnapshot {
             it.copy(
                 width = canvas.width,
@@ -750,7 +740,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 droppedVideoFrames = client.getDroppedVideoFrames(),
                 encodedVideoFrames = active.getEncodedVideoFrames(),
                 sentBytes = client.getBytesSend(),
-                sendQueueBytes = client.getItemsInCache().toLong(),
+                sendQueueFrames = client.getItemsInCache().toLong(),
                 reconnectCount = reconnectCount,
                 networkConnected = networkConnected,
                 loopCount = loopCount
@@ -1060,11 +1050,6 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
             (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) ||
                 caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED))
-    }
-
-    private fun adaptBitrateIfNeeded(bitrate: Long) {
-        // bitrate is an actual sender measurement in bits/sec; it is not treated as proof of ingest.
-        if (bitrate < 0) return
     }
 
     private fun sanitizeReason(reason: String): String = when {

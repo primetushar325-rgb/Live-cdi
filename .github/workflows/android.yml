@@ -44,8 +44,26 @@ jobs:
           java-version: '17'
           cache: gradle
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate the Android SDK preinstalled on the GitHub runner
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "Android SDK was not found at $SDK" >&2
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            SDKMANAGER="$(find "$SDK/cmdline-tools" -path '*/bin/sdkmanager' -type f -print -quit 2>/dev/null || true)"
+            if [ -z "$SDKMANAGER" ]; then
+              echo "sdkmanager is missing from the GitHub runner Android SDK" >&2
+              exit 1
+            fi
+            echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
+            export PATH="$(dirname "$SDKMANAGER"):$PATH"
+          fi
+          sdkmanager --version
 
       - name: Install Android 36 platform and build tools
         run: sdkmanager "platforms;android-36" "build-tools;36.0.0"

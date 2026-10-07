@@ -93,6 +93,7 @@ class MainActivity : AppCompatActivity() {
     private var lastSnapshot = SessionSnapshot()
     private var snapshotJob: Job? = null
     private var pendingLiveRequest: StreamRequest? = null
+    private var permissionPromptActive = false
     private var previewTexture: TextureView? = null
     private var previewHost: AspectCanvasHost? = null
     private var editorStatus: TextView? = null
@@ -138,8 +139,14 @@ class MainActivity : AppCompatActivity() {
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         val request = pendingLiveRequest
         pendingLiveRequest = null
-        if (granted && request != null) beginLive(request)
-        else if (request != null) showNotificationPermissionChoice(request)
+        if (granted && request != null) {
+            permissionPromptActive = false
+            beginLive(request)
+        } else if (request != null) {
+            showNotificationPermissionChoice(request)
+        } else {
+            permissionPromptActive = false
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -173,7 +180,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         // The Android notification-permission sheet is a transient system UI; keep the
         // prepared encoder alive until its result returns to the editor.
-        if (pendingLiveRequest == null) {
+        if (pendingLiveRequest == null && !permissionPromptActive) {
             val engine = service
             if (engine != null) {
                 if (engine.isSessionRunning()) engine.detachPreview()
@@ -636,7 +643,7 @@ class MainActivity : AppCompatActivity() {
         val bitrateSummary = when (bitrateMode) {
             BitrateMode.AUTO -> "Auto · conservative adaptation"
             BitrateMode.RECOMMENDED -> "Recommended · ${formatRate(customOrRecommended())} target"
-            BitrateMode.CUSTOM -> "Custom · ${formatRate(customBitrateBps.toLong())} target"
+            BitrateMode.CUSTOM -> "Custom · ${formatRate(bitrateFor(quality).toLong())} target"
         }
         column.addView(choiceRow("BITRATE", bitrateSummary) { chooseBitrate() })
         val loopRow = horizontal().apply { setPadding(0, dp(10), 0, 0) }
@@ -858,7 +865,7 @@ class MainActivity : AppCompatActivity() {
     private fun bitrateFor(targetQuality: VideoQuality): Int = when (bitrateMode) {
         BitrateMode.AUTO -> if (targetQuality == VideoQuality.P1080) 4_000_000 else 2_200_000
         BitrateMode.RECOMMENDED -> if (targetQuality == VideoQuality.P1080) 5_000_000 else 2_800_000
-        BitrateMode.CUSTOM -> customBitrateBps
+        BitrateMode.CUSTOM -> customBitrateBps.coerceIn(1_000_000, if (targetQuality == VideoQuality.P1080) 8_000_000 else 5_000_000)
     }
 
     private fun copyStreamKey() {
@@ -905,8 +912,10 @@ class MainActivity : AppCompatActivity() {
         }
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             pendingLiveRequest = request
+            permissionPromptActive = true
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         } else {
+            permissionPromptActive = false
             beginLive(request)
         }
     }
@@ -915,8 +924,14 @@ class MainActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setTitle("Notifications are off")
             .setMessage("Android may hide the persistent stream notification and its Stop action. You can still continue, but allow notifications for the safest background controls.")
-            .setNegativeButton("CANCEL", null)
-            .setPositiveButton("CONTINUE") { _, _ -> beginLive(request) }
+            .setNegativeButton("CANCEL") { _, _ ->
+                permissionPromptActive = false
+            }
+            .setPositiveButton("CONTINUE") { _, _ ->
+                permissionPromptActive = false
+                beginLive(request)
+            }
+            .setOnCancelListener { permissionPromptActive = false }
             .show()
     }
 
@@ -1224,7 +1239,7 @@ class MainActivity : AppCompatActivity() {
         dashboardMetrics["dropped"]?.text = snapshot.droppedVideoFrames?.toString() ?: "N/A"
         dashboardMetrics["encoded"]?.text = snapshot.encodedVideoFrames?.toString() ?: "N/A"
         dashboardMetrics["sent"]?.text = snapshot.sentBytes?.let(::formatBytes) ?: "N/A"
-        dashboardMetrics["queue"]?.text = snapshot.sendQueueBytes?.let { "$it frames" } ?: "N/A"
+        dashboardMetrics["queue"]?.text = snapshot.sendQueueFrames?.let { "$it frames" } ?: "N/A"
         dashboardMetrics["reconnects"]?.text = snapshot.reconnectCount.toString()
     }
 
