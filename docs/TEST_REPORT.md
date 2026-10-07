@@ -15,7 +15,8 @@ GitHub Actions runs `:app:testDebugUnitTest`, then assembles debug and release A
 - Repository contains a Gradle wrapper pinned to Gradle 8.14.3, Android Gradle Plugin 8.13.2, Kotlin 2.2.21 and JDK 17 in CI.
 - RootEncoder 2.7.0 source and its license are vendored; the RTMP facade and real H.264/AAC MediaCodec pipeline are used.
 - Python re-vendoring script compiles with `python3 -m py_compile` and can reproduce the pinned source trim/patches.
-- APK build/test could not be executed in the source-editing sandbox because no Java/Android SDK is installed there. GitHub Actions is the build environment; check the latest workflow run for actual build results.
+- The source-editing sandbox has no Java/Android SDK, so local Gradle build/test could not run. GitHub Actions run [#9](https://github.com/primetushar325-rgb/Live-cdi/actions/runs/37637595415), on app-code commit `32eba4d`, passed on 2026-10-07: JVM unit tests, debug APK assembly, release APK assembly and the non-blocking lint step completed successfully.
+- The run uploaded `MihadLive-APK-9` (12,970,666 bytes; retained for 30 days), containing the installable debug and release APKs. Download it from the run's **Artifacts** section.
 - No actual Android device or YouTube Live Control Room credentials were available. No physical device, screen-off, network-disconnect, thermal, audio-sync or long-running YouTube-ingest test is claimed.
 
 ## Required device / YouTube validation before production claims
@@ -34,5 +35,5 @@ Use an unlisted/private test broadcast and a test stream key. On each representa
 ## Current result / limitations
 
 - The implementation is source-complete for the Android app, service, UI, RTMP engine, build workflow, JVM test suite, architecture and setup documentation.
-- **Build status is pending CI** until a successful Actions run produces the APK artifact.
+- **CI build status: passed** for app-code commit `32eba4d`; the Actions run produced both APK variants and uploaded them as the artifact linked above.
 - **YouTube success is unverified.** This build must not be described as production-proven or as showing a verified YouTube LIVE state until the device/Control Room test plan passes and official ingest verification is implemented.

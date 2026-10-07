@@ -11,7 +11,7 @@ Mihad Live is an Android application for streaming a selected local video to a u
 3. Open the completed **Build APK** run.
 4. Download the **MihadLive-APK-…** artifact and install the debug APK. Android may ask you to allow installs from the browser/files app.
 
-Every push builds and uploads a debug APK. Manual runs also build a release APK by default. A tag such as `v1.0.0` creates a GitHub Release with the APKs. Releases are signed with the supplied `MIL_*` keystore secrets when present; without those secrets, the release artifact is signed with the Android debug key and is for testing only.
+Every push runs the JVM tests and builds/uploads debug and release APKs. Manual runs do the same by default; workflow inputs can disable tests or the release build. A tag such as `v1.0.0` creates a GitHub Release with the APKs. Releases are signed with the supplied `MIL_*` keystore secrets when present; without those secrets, the release artifact is signed with the Android debug key and is for testing only.
 
 ## Build locally
 
