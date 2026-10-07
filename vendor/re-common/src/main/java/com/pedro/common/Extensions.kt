@@ -58,22 +58,22 @@ fun MediaCodec.BufferInfo.isKeyframe(): Boolean {
 }
 
 fun ByteBuffer.toByteArray(): ByteArray {
-  return if (this.hasArray() && !isDirect) {
-    this.array()
-  } else {
-    this.rewind()
-    val byteArray = ByteArray(this.remaining())
-    this.get(byteArray)
-    byteArray
+  if (hasArray() && !isDirect && arrayOffset() == 0 && position() == 0 && limit() == capacity()) {
+    return array()
   }
+  // Copy this view's logical contents from index zero to its limit without changing its position.
+  val source = duplicate().apply { position(0) }
+  return ByteArray(source.limit()).also { source.get(it) }
 }
 
 fun ByteBuffer.removeInfo(info: MediaFrame.Info): ByteBuffer {
-  try {
+  require(info.offset >= 0 && info.size >= 0) { "Invalid encoded buffer range" }
+  require(info.offset <= limit() && info.size <= limit() - info.offset) { "Encoded buffer range exceeds its limit" }
+  val end = info.offset + info.size
+  return duplicate().apply {
     position(info.offset)
-    limit(info.size)
-  } catch (_: Exception) { }
-  return slice()
+    limit(end)
+  }.slice()
 }
 
 inline infix fun <reified T: Any> BlockingQueue<T>.trySend(item: T): Boolean {

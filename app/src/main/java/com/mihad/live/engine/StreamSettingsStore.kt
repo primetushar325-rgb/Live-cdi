@@ -32,7 +32,7 @@ class StreamSettingsStore(context: Context) {
     }
 
     fun saveServerUrl(url: String) {
-        plain.edit().putString(KEY_SERVER_URL, url.trim()).apply()
+        plain.edit().putString(KEY_SERVER_URL, url).apply()
     }
 
     fun serverUrl(): String = plain.getString(KEY_SERVER_URL, "") ?: ""

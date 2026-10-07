@@ -16,7 +16,7 @@ class UrlParser private constructor(
     @Throws(URISyntaxException::class)
     fun parse(endpoint: String, requiredProtocol: Array<String>): UrlParser {
       val uri = URI(endpoint)
-      if (uri.scheme != null && !requiredProtocol.contains(uri.scheme.trim())) {
+      if (uri.scheme != null && !requiredProtocol.contains(uri.scheme.trim().lowercase())) {
         throw URISyntaxException(endpoint, "Invalid protocol: ${uri.scheme}")
       }
       if (uri.userInfo != null && !uri.userInfo.contains(":")) {
@@ -43,10 +43,12 @@ class UrlParser private constructor(
 
   init {
     val url = uri.toString()
-    scheme = uri.scheme
+    // URI schemes are case-insensitive, but preserve the user's original URL outside this parser.
+    // Normalize only the protocol identifier for TLS selection and RTMP command construction.
+    scheme = uri.scheme.lowercase()
     host = uri.host
     port = if (uri.port < 0) null else uri.port
-    path = uri.path.removePrefix("/")
+    path = uri.rawPath.orEmpty().removePrefix("/")
     if (uri.query != null) {
       val i = url.indexOf("?")
       query = url.substring(i + 1)

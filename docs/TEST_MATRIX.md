@@ -2,15 +2,20 @@
 
 | Case | Automated in this repository | Device / YouTube required | Expected handling |
 |---|---:|---:|---|
+| Exact RTMP/RTMPS scheme, host, explicit port and raw path preservation | Yes (JVM endpoint tests) | Yes | Reject whitespace; preserve valid entered components and append the exact separate key without logging it |
+| MediaCodec / sliced ByteBuffer range handling | Yes (JVM unit tests) | Yes for device codecs | Copy the buffer's logical view and exactly `BufferInfo.offset..offset + size`; reject invalid ranges without mutating the shared encoder buffer |
+| Ingest readiness evidence reducer | Yes (JVM unit tests) | Yes for actual transport | Never use preview/encoder/socket alone; require accepted publish, successful H.264 config/raw video/keyframe writes and AAC config/raw audio when audio is expected |
+| Handshake failure vs publish failure vs accepted publish with no media | Yes (JVM state/evidence tests) | Yes | Distinct diagnostics: `INGEST: HANDSHAKE FAILED`, `INGEST: PUBLISH FAILED`, `INGEST: CONNECTED — MEDIA NOT FLOWING` |
 | 16:9 source → 16:9 output | Viewport math only | Yes | Fit/Fill in a 16:9 H.264 canvas |
 | 16:9 source → 9:16 output | Viewport math only | Yes | Preserve source ratio; black side/letterbox canvas for Fit |
 | 9:16 source → 16:9 output | Viewport math only | Yes | Preserve ratio; black pillarbox canvas for Fit |
 | Zoom / pan / reset | Viewport math only | Yes | Preview and encoder receive same normalized GL viewport |
-| Actual RTMP H.264/AAC publication | No | Yes | One RootEncoder RTMP session, server publish callback only |
+| Actual RTMP/RTMPS H.264/AAC transmission and Control Room receipt | No | Yes | Confirm actual video and audio in YouTube Control Room; local packet-write counters alone are not success |
+| Ten-minute stability, screen lock and network-loss reconnect | No | Yes | One continuous session, no false LIVE state, reconnect without duplicate publisher; verify in Control Room |
 | Screen off / app minimized | No | Yes | Foreground service + notification + partial wake lock |
 | Wi-Fi lost/restored | No | Yes | Existing RTMP client reconnect; timer remains continuous |
-| No-audio video | Source selection in code | Yes | Video-only RTMP; no synthetic silence |
-| Stream key invalid | URL/state code | Yes | Useful rejection message; never display LIVE |
+| No-audio video | Source selection in code | Yes | Video-only RTMP; no synthetic silence; ingest criteria do not require AAC |
+| Stream key invalid | URL/state code | Yes | Useful rejection; key value never appears in logs or diagnostics; never display LIVE |
 | Unsupported MediaCodec setup | Capability preflight code | Yes | Reject before publish; suggest lower quality/FPS |
 | Long-running/thermal behavior | No | Yes | Multi-hour run on representative OEM devices |
-| YouTube ingest / LIVE status | No | Yes + official API | Current app intentionally reports STREAMING TO RTMP / NOT VERIFIED |
+| YouTube ingest / LIVE status | No | Yes; Control Room or official authenticated API | App's `INGEST CONNECTED` means local RTMP publish acceptance plus packet writes only. Actual receipt and `LIVE` remain Control Room-only and are not currently detected. |

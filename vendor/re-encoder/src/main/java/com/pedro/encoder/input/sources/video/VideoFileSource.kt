@@ -96,6 +96,9 @@ class VideoFileSource(
 
   fun getSourceHeight() = videoDecoder.height
 
+  /** Number of non-empty MediaCodec-decoded source video frames. */
+  fun getDecodedFrames() = videoDecoder.getDecodedFrames()
+
   fun setLoopMode(enabled: Boolean) {
     videoDecoder.isLoopMode = enabled
   }

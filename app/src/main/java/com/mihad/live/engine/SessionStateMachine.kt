@@ -19,16 +19,39 @@ class SessionStateMachine(initial: StreamState = StreamState.IDLE) {
         private val allowed = mapOf(
             StreamState.IDLE to setOf(StreamState.PREPARING, StreamState.STOPPED, StreamState.ERROR),
             StreamState.PREPARING to setOf(StreamState.ENCODER_READY, StreamState.ERROR, StreamState.STOPPING),
-            StreamState.ENCODER_READY to setOf(StreamState.PREPARING, StreamState.RTMP_CONNECTING, StreamState.STOPPING, StreamState.ERROR, StreamState.STOPPED),
-            StreamState.RTMP_CONNECTING to setOf(StreamState.RTMP_CONNECTED, StreamState.RTMP_PUBLISHING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR),
-            StreamState.RTMP_CONNECTED to setOf(StreamState.RTMP_PUBLISHING, StreamState.INGEST_VERIFYING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR),
-            StreamState.RTMP_PUBLISHING to setOf(StreamState.INGEST_VERIFYING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR),
-            StreamState.INGEST_VERIFYING to setOf(StreamState.RTMP_PUBLISHING, StreamState.LIVE_VERIFIED, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR),
-            StreamState.LIVE_VERIFIED to setOf(StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR),
-            StreamState.RECONNECTING to setOf(StreamState.RTMP_CONNECTING, StreamState.RTMP_CONNECTED, StreamState.RTMP_PUBLISHING, StreamState.INGEST_VERIFYING, StreamState.STOPPING, StreamState.ERROR),
+            StreamState.ENCODER_READY to setOf(
+                StreamState.PREPARING, StreamState.CONNECTING_TO_YOUTUBE,
+                StreamState.STOPPING, StreamState.ERROR, StreamState.STOPPED
+            ),
+            StreamState.CONNECTING_TO_YOUTUBE to setOf(
+                StreamState.RTMP_HANDSHAKE, StreamState.PUBLISHING, StreamState.RECONNECTING,
+                StreamState.STOPPING, StreamState.ERROR
+            ),
+            StreamState.RTMP_HANDSHAKE to setOf(
+                StreamState.CONNECTING_TO_YOUTUBE, StreamState.PUBLISHING,
+                StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
+            ),
+            StreamState.PUBLISHING to setOf(
+                StreamState.MEDIA_FLOWING, StreamState.INGEST_CONNECTED, StreamState.RECONNECTING,
+                StreamState.STOPPING, StreamState.ERROR
+            ),
+            StreamState.MEDIA_FLOWING to setOf(
+                StreamState.INGEST_CONNECTED, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
+            ),
+            StreamState.INGEST_CONNECTED to setOf(
+                StreamState.MEDIA_FLOWING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
+            ),
+            StreamState.LIVE to setOf(StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR),
+            StreamState.RECONNECTING to setOf(
+                StreamState.CONNECTING_TO_YOUTUBE, StreamState.RTMP_HANDSHAKE, StreamState.PUBLISHING,
+                StreamState.MEDIA_FLOWING, StreamState.INGEST_CONNECTED,
+                StreamState.STOPPING, StreamState.ERROR
+            ),
             StreamState.STOPPING to setOf(StreamState.STOPPED, StreamState.ERROR),
             StreamState.STOPPED to setOf(StreamState.IDLE, StreamState.PREPARING),
-            StreamState.ERROR to setOf(StreamState.PREPARING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.STOPPED)
+            StreamState.ERROR to setOf(
+                StreamState.PREPARING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.STOPPED
+            )
         )
     }
 }

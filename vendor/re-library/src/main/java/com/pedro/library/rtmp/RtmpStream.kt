@@ -23,9 +23,11 @@ import androidx.annotation.RequiresApi
 import com.pedro.common.AudioCodec
 import com.pedro.common.ConnectChecker
 import com.pedro.common.VideoCodec
+import com.pedro.encoder.input.sources.audio.AudioFileSource
 import com.pedro.encoder.input.sources.audio.AudioSource
 import com.pedro.encoder.input.sources.audio.MicrophoneSource
 import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.input.sources.video.VideoFileSource
 import com.pedro.encoder.input.sources.video.VideoSource
 import com.pedro.library.base.StreamBase
 import com.pedro.library.util.streamclient.RtmpStreamClient
@@ -52,6 +54,12 @@ class RtmpStream(
   private val encodedAudioBytes = AtomicLong(0)
   private val encodedVideoFrames = AtomicLong(0)
   private val encodedAudioFrames = AtomicLong(0)
+  private val fileVideoSource = videoSource as? VideoFileSource
+  private val fileAudioSource = audioSource as? AudioFileSource
+
+  /** Actual decoded media counters from the selected local file source. */
+  fun getDecodedSourceVideoFrames(): Long = fileVideoSource?.getDecodedFrames() ?: 0L
+  fun getDecodedSourceAudioFrames(): Long = fileAudioSource?.getDecodedFrames() ?: 0L
 
   /** Encoded MediaCodec output counters; values do not include RTMP/FLV overhead. */
   fun getEncodedVideoBytes(): Long = encodedVideoBytes.get()

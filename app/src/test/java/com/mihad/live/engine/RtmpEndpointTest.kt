@@ -8,11 +8,31 @@ import org.junit.Test
 class RtmpEndpointTest {
 
     @Test
-    fun `builds RTMPS endpoint only from validated server and key`() {
+    fun `preserves the exact server prefix and raw key characters`() {
         assertEquals(
-            "rtmps://a.rtmp.youtube.com/live2/test-key-123",
-            RtmpEndpoint.build(" rtmps://a.rtmp.youtube.com/live2/ ", " test-key-123 ")
+            "rtmps://a.rtmp.youtube.com:443/live2/test-key_123.a~b:live",
+            RtmpEndpoint.build("rtmps://a.rtmp.youtube.com:443/live2", "test-key_123.a~b:live")
         )
+    }
+
+    @Test
+    fun `preserves scheme host explicit port and encoded application path verbatim`() {
+        val server = "RTMPS://YouTube.Example:443/live2/custom%20path/"
+        assertEquals("${server}Key_123", RtmpEndpoint.build(server, "Key_123"))
+    }
+
+    @Test
+    fun `does not duplicate a server path separator`() {
+        assertEquals(
+            "rtmps://a.rtmp.youtube.com/live2/key-1",
+            RtmpEndpoint.build("rtmps://a.rtmp.youtube.com/live2/", "key-1")
+        )
+    }
+
+    @Test
+    fun `rejects whitespace rather than silently changing credentials`() {
+        assertFalse(RtmpEndpoint.validateServer(" rtmps://a.rtmp.youtube.com/live2").valid)
+        assertFalse(RtmpEndpoint.validateKey(" key-1").valid)
     }
 
     @Test

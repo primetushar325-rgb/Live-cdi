@@ -28,6 +28,7 @@ import com.pedro.encoder.input.decoder.AudioDecoder
 import com.pedro.encoder.input.decoder.DecoderInterface
 import com.pedro.encoder.input.decoder.Extractor
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Created by pedro on 12/1/24.
@@ -41,6 +42,7 @@ class AudioFileSource(
 
   private val getMicrophoneDataCallback = object: GetMicrophoneData {
     override fun inputPCMData(frame: Frame) {
+      if (frame.size > 0) decodedPcmFrames.incrementAndGet()
       audioTrackPlayer?.write(frame.buffer, frame.offset, frame.size)
       getMicrophoneData?.inputPCMData(frame)
     }
@@ -54,6 +56,7 @@ class AudioFileSource(
     }
   }
   private var running = false
+  private val decodedPcmFrames = AtomicLong(0)
   private var audioDecoder = AudioDecoder(getMicrophoneDataCallback, audioDecoderInterface, decoderInterface)
   private var audioTrackPlayer: AudioTrack? = null
   private var playingAudio = false
@@ -116,6 +119,9 @@ class AudioFileSource(
   fun getDuration() = audioDecoder.duration
 
   fun getTime() = audioDecoder.time
+
+  /** Number of non-empty source PCM frames delivered to the audio encoder input. */
+  fun getDecodedFrames() = decodedPcmFrames.get()
 
   fun setLoopMode(enabled: Boolean) {
     audioDecoder.isLoopMode = enabled

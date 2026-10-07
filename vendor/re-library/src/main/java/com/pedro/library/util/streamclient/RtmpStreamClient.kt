@@ -32,6 +32,18 @@ class RtmpStreamClient(
     rtmpClient.setIgnoredCommandCallback(callback)
   }
 
+  /** Fixed, non-sensitive transport/media events only; endpoint and stream key are never emitted. */
+  fun setStageListener(listener: ((String) -> Unit)?) {
+    rtmpClient.setStageListener(listener)
+  }
+
+  fun getSentVideoPackets(): Long = rtmpClient.sentVideoPackets
+  fun getSentAudioPackets(): Long = rtmpClient.sentAudioPackets
+  fun getSentVideoKeyframes(): Long = rtmpClient.sentVideoKeyframes
+  fun getSentVideoCodecConfigs(): Long = rtmpClient.sentVideoCodecConfigs
+  fun getSentAudioCodecConfigs(): Long = rtmpClient.sentAudioCodecConfigs
+  fun getSuccessfulMediaBytes(): Long = rtmpClient.successfulMediaBytes
+
   /**
    * Must be called before start stream or will be ignored.
    *

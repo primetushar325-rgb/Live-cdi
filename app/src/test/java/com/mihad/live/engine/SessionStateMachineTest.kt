@@ -8,23 +8,36 @@ import org.junit.Test
 class SessionStateMachineTest {
 
     @Test
-    fun `normal publishing lifecycle supports reconnect without resetting state`() {
+    fun `publishing lifecycle proves packet flow and can reconnect without resetting state`() {
         val machine = SessionStateMachine()
         assertTrue(machine.moveTo(StreamState.PREPARING))
         assertTrue(machine.moveTo(StreamState.ENCODER_READY))
-        assertTrue(machine.moveTo(StreamState.RTMP_CONNECTING))
-        assertTrue(machine.moveTo(StreamState.RTMP_PUBLISHING))
+        assertTrue(machine.moveTo(StreamState.CONNECTING_TO_YOUTUBE))
+        assertTrue(machine.moveTo(StreamState.RTMP_HANDSHAKE))
+        assertTrue(machine.moveTo(StreamState.CONNECTING_TO_YOUTUBE))
+        assertTrue(machine.moveTo(StreamState.PUBLISHING))
+        assertTrue(machine.moveTo(StreamState.MEDIA_FLOWING))
+        assertTrue(machine.moveTo(StreamState.INGEST_CONNECTED))
         assertTrue(machine.moveTo(StreamState.RECONNECTING))
-        assertTrue(machine.moveTo(StreamState.RTMP_CONNECTING))
-        assertTrue(machine.moveTo(StreamState.RTMP_PUBLISHING))
-        assertEquals(StreamState.RTMP_PUBLISHING, machine.current)
+        assertTrue(machine.moveTo(StreamState.CONNECTING_TO_YOUTUBE))
+        assertTrue(machine.moveTo(StreamState.RTMP_HANDSHAKE))
+        assertTrue(machine.moveTo(StreamState.CONNECTING_TO_YOUTUBE))
+        assertTrue(machine.moveTo(StreamState.PUBLISHING))
+        assertEquals(StreamState.PUBLISHING, machine.current)
     }
 
     @Test
-    fun `cannot claim live verified directly from idle`() {
+    fun `cannot claim live before ingest is connected`() {
         val machine = SessionStateMachine()
-        assertFalse(machine.moveTo(StreamState.LIVE_VERIFIED))
-        assertEquals(StreamState.IDLE, machine.current)
+        assertFalse(machine.moveTo(StreamState.LIVE))
+        assertTrue(machine.moveTo(StreamState.PREPARING))
+        assertTrue(machine.moveTo(StreamState.ENCODER_READY))
+        assertTrue(machine.moveTo(StreamState.CONNECTING_TO_YOUTUBE))
+        assertTrue(machine.moveTo(StreamState.RTMP_HANDSHAKE))
+        assertTrue(machine.moveTo(StreamState.CONNECTING_TO_YOUTUBE))
+        assertTrue(machine.moveTo(StreamState.PUBLISHING))
+        assertFalse(machine.moveTo(StreamState.LIVE))
+        assertEquals(StreamState.PUBLISHING, machine.current)
     }
 
     @Test

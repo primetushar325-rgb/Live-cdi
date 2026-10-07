@@ -23,6 +23,7 @@ import com.pedro.common.frame.MediaFrame;
 import com.pedro.encoder.utils.CodecUtil;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Created by pedro on 20/06/17.
@@ -30,6 +31,7 @@ import java.nio.ByteBuffer;
 public class VideoDecoder extends BaseDecoder {
 
   private final VideoDecoderInterface videoDecoderInterface;
+  private final AtomicLong decodedFrames = new AtomicLong(0);
   private int width;
   private int height;
   private int fps;
@@ -64,7 +66,13 @@ public class VideoDecoder extends BaseDecoder {
 
   @Override
   protected boolean decodeOutput(ByteBuffer outputBuffer, long timeStamp) {
+    if (bufferInfo.size > 0) decodedFrames.incrementAndGet();
     return true;
+  }
+
+  /** Number of non-empty decoded source video frames. */
+  public long getDecodedFrames() {
+    return decodedFrames.get();
   }
 
   @Override

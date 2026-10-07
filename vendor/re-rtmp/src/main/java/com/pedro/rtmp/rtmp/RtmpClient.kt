@@ -78,7 +78,8 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
   private var job: Job? = null
   private var jobRetry: Job? = null
   private var commandsManager: CommandsManager = CommandsManagerAmf0()
-  private val rtmpSender = RtmpSender(connectChecker, commandsManager)
+  @Volatile private var stageListener: ((String) -> Unit)? = null
+  private val rtmpSender = RtmpSender(connectChecker, commandsManager) { stage -> reportStage(stage) }
 
   @Volatile
   var isStreaming = false
@@ -109,6 +110,18 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
     get() = rtmpSender.getSentVideoFrames()
   val bytesSend: Long
     get() = rtmpSender.getBytesSend()
+  val successfulMediaBytes: Long
+    get() = rtmpSender.getSuccessfulMediaBytes()
+  val sentVideoPackets: Long
+    get() = rtmpSender.getSuccessfulVideoPackets()
+  val sentAudioPackets: Long
+    get() = rtmpSender.getSuccessfulAudioPackets()
+  val sentVideoKeyframes: Long
+    get() = rtmpSender.getSuccessfulVideoKeyframes()
+  val sentVideoCodecConfigs: Long
+    get() = rtmpSender.getSuccessfulVideoConfigs()
+  val sentAudioCodecConfigs: Long
+    get() = rtmpSender.getSuccessfulAudioConfigs()
   var socketType = SocketType.KTOR
   var socketTimeout = StreamSocket.DEFAULT_TIMEOUT
   var shouldFailOnRead = false
@@ -147,6 +160,15 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
 
   fun setIgnoredCommandCallback(callback: ((String) -> Unit)?) {
     ignoredCommandReceived = callback
+  }
+
+  /** Receives fixed, non-sensitive transport/media events for app diagnostics. */
+  fun setStageListener(listener: ((String) -> Unit)?) {
+    stageListener = listener
+  }
+
+  private fun reportStage(stage: String) {
+    stageListener?.invoke(stage)
   }
 
   /**
@@ -250,6 +272,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
           return@launch
         }
         this@RtmpClient.url = url
+        reportStage("CONNECTING")
         onMainThread {
           connectChecker.onConnectionStarted(url)
         }
@@ -258,6 +281,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
           UrlParser.parse(url, validSchemes)
         } catch (_: URISyntaxException) {
           isStreaming = false
+          reportStage("ENDPOINT_INVALID")
           onMainThread {
             connectChecker.onConnectionFailed(
               "Endpoint malformed, should be: rtmp://ip:port/appname/streamname")
@@ -275,12 +299,15 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
         commandsManager.tcUrl = urlParser.getTcUrl()
         if (commandsManager.appName.isEmpty()) {
           isStreaming = false
+          reportStage("ENDPOINT_INVALID")
           onMainThread {
             connectChecker.onConnectionFailed(
               "Endpoint malformed, should be: rtmp://ip:port/appname/streamname")
           }
           return@launch
         }
+        // Never report parsed host, app, or stream name: the final component is the secret key.
+        reportStage("ENDPOINT_PARSED")
 
         val user = urlParser.getAuthUser()
         val password = urlParser.getAuthPassword()
@@ -289,13 +316,14 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
         val error = runCatching {
           if (!establishConnection()) {
             onMainThread {
-              connectChecker.onConnectionFailed("Handshake failed")
+              connectChecker.onConnectionFailed("RTMP transport setup failed")
             }
             return@launch
           }
           val socket = this@RtmpClient.socket ?: throw IOException("Invalid socket, Connection failed")
           commandsManager.sendChunkSize(socket)
           commandsManager.sendConnect("", socket)
+          reportStage("RTMP_CONNECT_SENT")
           //read packets until you did success connection to server and you are ready to send packets
           while (scope.isActive && !publishPermitted) {
             //Handle all command received and send response for it.
@@ -306,9 +334,10 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
           handleServerPackets()
         }.exceptionOrNull()
         if (error != null) {
+          reportStage("TRANSPORT_ERROR")
           Log.e(TAG, "RTMP connection operation failed (${error.javaClass.simpleName})")
           onMainThread {
-            connectChecker.onConnectionFailed("Error configure stream, ${error.validMessage()}")
+            connectChecker.onConnectionFailed("RTMP connection setup failed")
           }
           return@launch
         }
@@ -355,13 +384,32 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
       TcpSocket(socketType, commandsManager.host, commandsManager.port, tlsEnabled, socketTimeout, certificates)
     }
     this.socket = socket
-    socket.connect()
-    if (!socket.isConnected()) return false
+    try {
+      socket.connect()
+    } catch (error: Exception) {
+      reportStage("SOCKET_CONNECT_FAILED")
+      throw error
+    }
+    if (!socket.isConnected()) {
+      reportStage("SOCKET_CONNECT_FAILED")
+      return false
+    }
+    reportStage("SOCKET_CONNECTED")
     val timestamp = TimeUtils.getCurrentTimeMillis() / 1000
     val handshake = Handshake()
-    if (!handshake.sendHandshake(socket)) return false
+    val handshakeSucceeded = try {
+      handshake.sendHandshake(socket)
+    } catch (error: Exception) {
+      reportStage("HANDSHAKE_FAILED")
+      throw error
+    }
+    if (!handshakeSucceeded) {
+      reportStage("HANDSHAKE_FAILED")
+      return false
+    }
     commandsManager.timestamp = timestamp.toInt()
     commandsManager.startTs = TimeUtils.getCurrentTimeNano() / 1000
+    reportStage("HANDSHAKE_COMPLETE")
     return true
   }
 
@@ -429,6 +477,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
           "_result" -> {
             when (commandName) {
               "connect" -> {
+                reportStage("RTMP_CONNECT_ACCEPTED")
                 if (commandsManager.onAuth) {
                   onMainThread { connectChecker.onAuthSuccess() }
                   commandsManager.onAuth = false
@@ -439,6 +488,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
                 try {
                   commandsManager.streamId = command.getStreamId()
                   commandsManager.sendPublish(socket)
+                  reportStage("PUBLISH_SENT")
                 } catch (e: ClassCastException) {
                   Log.e(TAG, "error parsing _result createStream", e)
                 }
@@ -452,6 +502,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
               when (commandName) {
                 "connect" -> {
                   if (description.contains("reason=authfail") || description.contains("reason=nosuchuser")) {
+                    reportStage("RTMP_CONNECT_FAILED")
                     onMainThread {
                       connectChecker.onAuthError()
                     }
@@ -487,6 +538,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
                       commandsManager.sendConnect("?authmod=llnw&user=${commandsManager.user}", socket)
                     }
                   } else {
+                    reportStage("RTMP_CONNECT_FAILED")
                     onMainThread {
                       connectChecker.onAuthError()
                     }
@@ -497,6 +549,8 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
                   Log.e(TAG, "$commandName failed (server rejected the RTMP command)")
                 }
                 else -> {
+                  if (commandName == "publish") reportStage("PUBLISH_FAILED")
+                  else reportStage("RTMP_CONNECT_FAILED")
                   onMainThread {
                     connectChecker.onConnectionFailed(description)
                   }
@@ -512,6 +566,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
               when (code) {
                 "NetStream.Publish.Start" -> {
                   commandsManager.sendMetadata(socket)
+                  reportStage("PUBLISH_ACCEPTED")
                   onMainThread {
                     connectChecker.onConnectionSuccess()
                   }
@@ -520,6 +575,11 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
                   publishPermitted = true
                 }
                 "NetConnection.Connect.Rejected", "NetStream.Publish.BadName", "NetConnection.Connect.Closed", "NetStream.Publish.Failed" -> {
+                  when (code) {
+                    "NetConnection.Connect.Rejected" -> reportStage("RTMP_CONNECT_FAILED")
+                    "NetStream.Publish.BadName", "NetStream.Publish.Failed" -> reportStage("PUBLISH_FAILED")
+                    else -> reportStage("TRANSPORT_ERROR")
+                  }
                   onMainThread {
                     connectChecker.onConnectionFailed("onStatus: $code")
                   }

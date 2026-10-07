@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
@@ -107,6 +108,9 @@ class MainActivity : AppCompatActivity() {
     private var dashboardIngestState: TextView? = null
     private var dashboardError: TextView? = null
     private var dashboardRetryButton: MaterialButton? = null
+    private var dashboardDiagnostics: TextView? = null
+    private var dashboardDiagnosticsContainer: View? = null
+    private var dashboardDiagnosticsToggle: MaterialButton? = null
     private val dashboardMetrics = mutableMapOf<String, TextView>()
     private var preparePreviewJob: Job? = null
     private val uiHandler by lazy { android.os.Handler(mainLooper) }
@@ -694,6 +698,7 @@ class MainActivity : AppCompatActivity() {
         )
         column.addView(server.first)
         server.second.addTextChangedListener(simpleWatcher { serverUrlValue = it })
+        column.addView(label("Enter the server and application path only; paste the exact stream key separately below.", 9f, R.color.ml_text_muted))
         column.addSpace(10)
         val keyInput = makeInput(
             "YOUTUBE STREAM KEY",
@@ -958,7 +963,7 @@ class MainActivity : AppCompatActivity() {
         val name = streamNameValue.trim().ifBlank { "Mihad Live" }
         return StreamRequest(
             streamName = name,
-            serverUrl = serverUrlValue.trim(),
+            serverUrl = serverUrlValue,
             streamKey = streamKeyValue,
             videoAsset = video,
             format = liveFormat,
@@ -1076,7 +1081,7 @@ class MainActivity : AppCompatActivity() {
         val statusCard = card(R.color.ml_cyan_dim, 22)
         val statusColumn = vertical().apply { setPadding(dp(17), dp(17), dp(17), dp(17)) }
         val statusRow = horizontal()
-        val status = label("● CONNECTING", 16f, R.color.ml_cyan, bold = true)
+        val status = label("● CONNECTING TO YOUTUBE", 16f, R.color.ml_cyan, bold = true)
         dashboardStatus = status
         statusRow.addView(status, LinearLayout.LayoutParams(0, dp(30), 1f))
         dashboardDuration = label("00:00:00", 17f, R.color.ml_text, bold = true)
@@ -1092,7 +1097,7 @@ class MainActivity : AppCompatActivity() {
         val stateColumn = vertical().apply { setPadding(dp(15), dp(12), dp(15), dp(12)) }
         dashboardEngineState = stateRow(stateColumn, "APP ENGINE", "PREPARING")
         dashboardRtmpState = stateRow(stateColumn, "RTMP CONNECTION", "CONNECTING")
-        dashboardIngestState = stateRow(stateColumn, "YOUTUBE INGEST", "NOT VERIFIED")
+        dashboardIngestState = stateRow(stateColumn, "RTMP INGEST", "INGEST: NOT CONNECTED")
         stateCard.addView(stateColumn)
         body.addView(stateCard)
         body.addSpace(12)
@@ -1127,6 +1132,30 @@ class MainActivity : AppCompatActivity() {
             }
             body.addView(line, marginParams(bottom = 8))
         }
+        body.addSpace(10)
+        val diagnosticsToggle = button("DEVELOPER DIAGNOSTICS · SHOW", stroke = true).apply {
+            setOnClickListener {
+                val panel = dashboardDiagnosticsContainer ?: return@setOnClickListener
+                val show = panel.visibility != View.VISIBLE
+                panel.visibility = if (show) View.VISIBLE else View.GONE
+                text = if (show) "DEVELOPER DIAGNOSTICS · HIDE" else "DEVELOPER DIAGNOSTICS · SHOW"
+            }
+        }
+        dashboardDiagnosticsToggle = diagnosticsToggle
+        body.addView(diagnosticsToggle, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)))
+        val diagnosticsCard = card(R.color.ml_stroke_soft, 16).apply { visibility = View.GONE }
+        val diagnosticsColumn = vertical().apply { setPadding(dp(13), dp(12), dp(13), dp(12)) }
+        diagnosticsColumn.addView(label("LOCAL PIPELINE EVIDENCE · STREAM KEY VALUE IS NEVER SHOWN", 8f, R.color.ml_cyan_dim, bold = true))
+        val diagnostics = label("Waiting for a stream attempt…", 10f, R.color.ml_text_secondary).apply {
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(0, dp(8), 0, 0)
+        }
+        dashboardDiagnostics = diagnostics
+        diagnosticsColumn.addView(diagnostics)
+        diagnosticsCard.addView(diagnosticsColumn)
+        dashboardDiagnosticsContainer = diagnosticsCard
+        body.addView(diagnosticsCard, marginParams(top = 8))
         body.addSpace(12)
         val studio = button("OPEN YOUTUBE STUDIO", stroke = true).apply {
             setOnClickListener {
@@ -1136,7 +1165,7 @@ class MainActivity : AppCompatActivity() {
         }
         body.addView(studio, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
         body.addSpace(8)
-        body.addView(label("YouTube ingest and LIVE status are not verifiable through RTMP alone. This app will not display LIVE without official ingest confirmation.", 10f, R.color.ml_text_muted))
+        body.addView(label("INGEST CONNECTED means the RTMP server accepted publishing and required media packets were written. Confirm actual receipt and LIVE status in YouTube Control Room.", 10f, R.color.ml_text_muted))
         body.addSpace(18)
         body.addView(button("STOP LIVE", primary = true).apply {
             setBackgroundTintList(android.content.res.ColorStateList.valueOf(colorResource(R.color.ml_live)))
@@ -1153,9 +1182,15 @@ class MainActivity : AppCompatActivity() {
 
     private fun stateRow(parent: LinearLayout, title: String, value: String): TextView {
         val row = horizontal().apply { setPadding(0, dp(4), 0, dp(4)) }
-        row.addView(label(title, 9f, R.color.ml_text_secondary, bold = true), LinearLayout.LayoutParams(0, dp(24), 1f))
-        val state = label(value, 10f, R.color.ml_cyan, bold = true)
-        row.addView(state)
+        row.addView(
+            label(title, 9f, R.color.ml_text_secondary, bold = true),
+            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, .82f)
+        )
+        val state = label(value, 10f, R.color.ml_cyan, bold = true).apply {
+            gravity = Gravity.END
+            maxLines = 2
+        }
+        row.addView(state, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.18f))
         parent.addView(row)
         return state
     }
@@ -1190,38 +1225,51 @@ class MainActivity : AppCompatActivity() {
         val statusColor = when (snapshot.state) {
             StreamState.ERROR -> R.color.ml_error
             StreamState.RECONNECTING -> R.color.ml_warn
-            StreamState.RTMP_PUBLISHING, StreamState.INGEST_VERIFYING -> R.color.ml_cyan
-            StreamState.LIVE_VERIFIED -> R.color.ml_live
+            StreamState.INGEST_CONNECTED, StreamState.MEDIA_FLOWING, StreamState.PUBLISHING -> R.color.ml_cyan
+            StreamState.LIVE -> R.color.ml_live
             StreamState.STOPPED -> R.color.ml_text_secondary
             else -> R.color.ml_cyan
         }
         dashboardStatus?.apply {
             text = when (snapshot.state) {
-                StreamState.RTMP_PUBLISHING, StreamState.INGEST_VERIFYING -> "● STREAMING TO RTMP"
-                StreamState.LIVE_VERIFIED -> "● LIVE"
+                StreamState.CONNECTING_TO_YOUTUBE -> "● CONNECTING TO YOUTUBE"
+                StreamState.RTMP_HANDSHAKE -> "● RTMP HANDSHAKE"
+                StreamState.PUBLISHING -> "● PUBLISHING"
+                StreamState.MEDIA_FLOWING -> "● MEDIA FLOWING"
+                StreamState.INGEST_CONNECTED -> "● INGEST CONNECTED"
+                StreamState.LIVE -> "● LIVE"
                 StreamState.RECONNECTING -> "● RECONNECTING"
                 StreamState.ERROR -> "● ERROR"
                 StreamState.STOPPING -> "● STOPPING"
                 StreamState.STOPPED -> "● STOPPED"
-                StreamState.RTMP_CONNECTED -> "● RTMP CONNECTED"
-                else -> "● CONNECTING"
+                else -> "● ${snapshot.statusText}"
             }
             setTextColor(colorResource(statusColor))
         }
         dashboardDuration?.text = formatDuration(snapshot.elapsedMs)
         dashboardSubstatus?.text = when (snapshot.state) {
-            StreamState.RTMP_PUBLISHING, StreamState.INGEST_VERIFYING -> "RTMP server accepted publishing. YouTube ingest is not confirmed."
-            StreamState.LIVE_VERIFIED -> "Verified by an official YouTube ingest check."
+            StreamState.CONNECTING_TO_YOUTUBE -> if (snapshot.handshakeStatus == "SUCCEEDED") {
+                "RTMP handshake complete; waiting for server connect and publish responses."
+            } else "Opening the entered RTMP or RTMPS server endpoint."
+            StreamState.RTMP_HANDSHAKE -> "Socket connected; exchanging RTMP handshake packets."
+            StreamState.PUBLISHING -> if (snapshot.publishStatus == "ACCEPTED") {
+                "RTMP publish accepted. Waiting for successful codec configuration and media packet writes."
+            } else "Waiting for the RTMP server to accept the publish request."
+            StreamState.MEDIA_FLOWING -> "Media packet writes are confirmed. Checking keyframe and required audio evidence."
+            StreamState.INGEST_CONNECTED -> "RTMP publish and required encoded media writes are confirmed. Verify receipt in Control Room."
+            StreamState.LIVE -> "LIVE status requires official YouTube Control Room confirmation."
             StreamState.RECONNECTING -> "Retrying the RTMP transport; encoder and session timer are retained."
             StreamState.ERROR -> snapshot.errorMessage ?: "Stream needs attention."
             StreamState.STOPPED -> "Stream stopped. The dashboard reports measured values only."
-            else -> "Waiting for the RTMP server to accept the publish request."
+            else -> "Prepare the encoder, then start publishing."
         }
         dashboardEngineState?.text = snapshot.engineStatus
         dashboardRtmpState?.text = snapshot.rtmpStatus
         dashboardIngestState?.apply {
             text = snapshot.ingestStatus
-            setTextColor(colorResource(if (snapshot.ingestStatus.contains("NOT", true)) R.color.ml_warn else R.color.ml_text_secondary))
+            val warning = listOf("FAILED", "NOT FLOWING", "NOT CONNECTED", "WAITING", "RECONNECTING")
+                .any { snapshot.ingestStatus.contains(it, ignoreCase = true) }
+            setTextColor(colorResource(if (warning) R.color.ml_warn else R.color.ml_text_secondary))
         }
         dashboardError?.let { view ->
             val show = snapshot.state == StreamState.ERROR && !snapshot.errorMessage.isNullOrBlank()
@@ -1241,6 +1289,44 @@ class MainActivity : AppCompatActivity() {
         dashboardMetrics["sent"]?.text = snapshot.sentBytes?.let(::formatBytes) ?: "N/A"
         dashboardMetrics["queue"]?.text = snapshot.sendQueueFrames?.let { "$it frames" } ?: "N/A"
         dashboardMetrics["reconnects"]?.text = snapshot.reconnectCount.toString()
+        dashboardDiagnostics?.text = diagnosticPanelText(snapshot)
+    }
+
+    private fun diagnosticPanelText(snapshot: SessionSnapshot): String {
+        val serverValidity = when (snapshot.serverUrlValid) {
+            true -> "VALID"
+            false -> "INVALID"
+            null -> "NOT CHECKED"
+        }
+        val keyPresence = if (snapshot.streamKeyPresent) "PRESENT · VALUE HIDDEN" else "MISSING"
+        val sourceVideo = snapshot.sourceVideoFrames?.toString() ?: "N/A"
+        val sourceAudio = snapshot.sourceAudioFrames?.toString() ?: "N/A"
+        val encodedVideo = snapshot.encodedVideoFrames?.toString() ?: "N/A"
+        val encodedAudio = snapshot.encodedAudioFrames?.toString() ?: "N/A"
+        val videoPackets = snapshot.sentVideoPackets?.toString() ?: "N/A"
+        val audioPackets = snapshot.sentAudioPackets?.toString() ?: "N/A"
+        val keyframes = snapshot.sentKeyframes?.toString() ?: "N/A"
+        val bytes = snapshot.sentBytes?.let(::formatBytes) ?: "N/A"
+        return listOf(
+            "Server URL validity: $serverValidity",
+            "Stream key:          $keyPresence",
+            "Media source:        ${snapshot.sourceStatus} · ${snapshot.loopCount} loops",
+            "Decoded source video: $sourceVideo frames",
+            "Decoded source audio: $sourceAudio PCM blocks",
+            "H.264 encoder:       ${snapshot.videoEncoderStatus} · $encodedVideo frames",
+            "AAC encoder:         ${snapshot.audioEncoderStatus} · $encodedAudio frames",
+            "RTMP handshake:      ${snapshot.handshakeStatus}",
+            "RTMP connect:        ${snapshot.connectStatus}",
+            "RTMP publish:        ${snapshot.publishStatus}",
+            "H.264 config writes: ${if (snapshot.h264ConfigSent) "SENT" else "NOT SENT"}",
+            "AAC config writes:   ${if (snapshot.audioEncoderStatus == "NOT USED") "NOT REQUIRED" else if (snapshot.aacConfigSent) "SENT" else "NOT SENT"}",
+            "Video packets:       $videoPackets",
+            "Audio packets:       $audioPackets",
+            "Video keyframes:     $keyframes",
+            "FLV/RTMP bytes:      $bytes",
+            "Ingest state:        ${snapshot.ingestStatus}",
+            "Counts require a successful sender flush; RTMP writes do not prove Control Room receipt."
+        ).joinToString("\n")
     }
 
     private fun confirmStopLive() {
@@ -1263,7 +1349,7 @@ class MainActivity : AppCompatActivity() {
         body.addSpace(10)
         body.addView(infoCard("Gallery access", "Android's system document picker grants access only to the video you choose. Mihad Live does not request broad photo/video library access."))
         body.addSpace(10)
-        body.addView(infoCard("Live verification", "RTMP publish acceptance is not proof that YouTube is live. Until an official authenticated ingest verification is configured, the dashboard says STREAMING TO RTMP."))
+        body.addView(infoCard("Live verification", "The dashboard shows INGEST CONNECTED only after server publish acceptance and successful codec/media packet writes. YouTube Control Room must still confirm receipt and the actual LIVE status."))
         body.addSpace(10)
         body.addView(infoCard("Background streaming", "The foreground service owns the decoder, compositor, encoders and RTMP transport. A persistent notification includes a Stop Live action."))
         body.addSpace(20)
