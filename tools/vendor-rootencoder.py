@@ -239,8 +239,9 @@ def main() -> None:
         "    if (videoResult) {\n",
         "    val videoResult = videoSource.init(max(width, recordWidth), max(height, recordHeight), fps, rotation)\n"
         "    if (videoResult) {\n"
-        "      if (videoSource is VideoFileSource) {\n"
-        "        glInterface.setSourceSize(videoSource.getSourceWidth(), videoSource.getSourceHeight())\n"
+        "      val fileVideoSource = videoSource as? VideoFileSource\n"
+        "      if (fileVideoSource != null) {\n"
+        "        glInterface.setSourceSize(fileVideoSource.getSourceWidth(), fileVideoSource.getSourceHeight())\n"
         "      } else {\n"
         "        glInterface.setSourceSize(max(width, recordWidth), max(height, recordHeight))\n"
         "      }\n",
