@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mihad Live palette: BLACK + LIGHT SKY BLUE / CYAN GLOW -->
+
+    <!-- surfaces -->
+    <color name="ml_black">#FF03050A</color>
+    <color name="ml_bg">#FF05070C</color>
+    <color name="ml_bg_elevated">#FF0A1018</color>
+    <color name="ml_surface">#FF0C1521</color>
+    <color name="ml_surface_2">#FF111E2E</color>
+    <color name="ml_surface_3">#FF17293E</color>
+    <color name="ml_glass">#CC0C1521</color>
+
+    <!-- accent -->
+    <color name="ml_cyan">#FF38BDF8</color>
+    <color name="ml_cyan_dim">#FF0E7490</color>
+    <color name="ml_cyan_deep">#FF082F49</color>
+    <color name="ml_cyan_glow">#6638BDF8</color>
+    <color name="ml_cyan_glow_soft">#1F38BDF8</color>
+
+    <!-- text -->
+    <color name="ml_text">#FFE8F4FF</color>
+    <color name="ml_text_secondary">#FF87A2BC</color>
+    <color name="ml_text_muted">#FF4F6B85</color>
+
+    <!-- state -->
+    <color name="ml_live">#FFFF3B5C</color>
+    <color name="ml_live_glow">#66FF3B5C</color>
+    <color name="ml_ok">#FF22C55E</color>
+    <color name="ml_warn">#FFF59E0B</color>
+    <color name="ml_error">#FFEF4444</color>
+    <color name="ml_idle">#FF64748B</color>
+
+    <!-- separators / strokes -->
+    <color name="ml_stroke">#FF1E3348</color>
+    <color name="ml_stroke_soft">#FF142538</color>
+    <color name="ml_scrim">#B3000000</color>
+</resources>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MIHAD LIVE</string>
+    <string name="tagline">Stream. Stay Live.</string>
+
+    <!-- home -->
+    <string name="home_create_new_live">+ CREATE NEW LIVE</string>
+    <string name="home_recent_projects">Recent Projects</string>
+    <string name="home_live_history">Live History</string>
+    <string name="home_settings">Settings</string>
+    <string name="home_engine_ready">Streaming Engine</string>
+    <string name="home_no_projects">No projects yet. Tap CREATE NEW LIVE to start.</string>
+    <string name="home_no_history">No live history yet.</string>
+
+    <!-- common -->
+    <string name="action_back">Back</string>
+    <string name="action_next">Next</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_save">Save</string>
+    <string name="action_close">Close</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_stop_live">Stop Live</string>
+    <string name="action_start_live">START LIVE</string>
+    <string name="value_na">N/A</string>
+</resources>

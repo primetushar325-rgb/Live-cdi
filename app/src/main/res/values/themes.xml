@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+
+    <style name="Theme.MihadLive" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/ml_cyan</item>
+        <item name="colorOnPrimary">@color/ml_black</item>
+        <item name="colorPrimaryContainer">@color/ml_cyan_deep</item>
+        <item name="colorOnPrimaryContainer">@color/ml_cyan</item>
+        <item name="colorSecondary">@color/ml_cyan_dim</item>
+        <item name="colorOnSecondary">@color/ml_black</item>
+        <item name="colorSurface">@color/ml_surface</item>
+        <item name="colorOnSurface">@color/ml_text</item>
+        <item name="colorSurfaceVariant">@color/ml_surface_2</item>
+        <item name="colorOnSurfaceVariant">@color/ml_text_secondary</item>
+        <item name="colorError">@color/ml_error</item>
+        <item name="colorOnError">@color/ml_black</item>
+        <item name="colorOutline">@color/ml_stroke</item>
+
+        <item name="android:colorBackground">@color/ml_bg</item>
+        <item name="android:windowBackground">@drawable/ml_window_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+        <item name="android:windowTranslucentStatus" tools:targetApi="19">false</item>
+
+        <item name="android:textColorPrimary">@color/ml_text</item>
+        <item name="android:textColorSecondary">@color/ml_text_secondary</item>
+    </style>
+
+    <!-- Full screen immersive player / live dashboard -->
+    <style name="Theme.MihadLive.Dashboard" parent="Theme.MihadLive">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowFullscreen">false</item>
+    </style>
+</resources>
