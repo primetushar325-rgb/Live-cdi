@@ -74,7 +74,9 @@ class VideoFileSource(
   }
 
   override fun release() {
-    if (running) stop()
+    running = false
+    // stop() also releases MediaExtractor if no preview surface was attached.
+    videoDecoder.stop()
   }
 
   override fun isRunning(): Boolean = running
@@ -88,6 +90,11 @@ class VideoFileSource(
   fun getDuration() = videoDecoder.duration
 
   fun getTime() = videoDecoder.time
+
+  /** Actual decoded track size, available after [create] / prepareVideo. */
+  fun getSourceWidth() = videoDecoder.width
+
+  fun getSourceHeight() = videoDecoder.height
 
   fun setLoopMode(enabled: Boolean) {
     videoDecoder.isLoopMode = enabled

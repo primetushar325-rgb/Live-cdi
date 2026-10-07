@@ -32,6 +32,7 @@ import com.pedro.library.util.streamclient.RtmpStreamClient
 import com.pedro.library.util.streamclient.StreamClientListener
 import com.pedro.rtmp.rtmp.RtmpClient
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Created by pedro on 14/3/22.
@@ -47,6 +48,16 @@ class RtmpStream(
 ): StreamBase(context, videoSource, audioSource) {
 
   private val rtmpClient = RtmpClient(connectChecker)
+  private val encodedVideoBytes = AtomicLong(0)
+  private val encodedAudioBytes = AtomicLong(0)
+  private val encodedVideoFrames = AtomicLong(0)
+  private val encodedAudioFrames = AtomicLong(0)
+
+  /** Encoded MediaCodec output counters; values do not include RTMP/FLV overhead. */
+  fun getEncodedVideoBytes(): Long = encodedVideoBytes.get()
+  fun getEncodedAudioBytes(): Long = encodedAudioBytes.get()
+  fun getEncodedVideoFrames(): Long = encodedVideoFrames.get()
+  fun getEncodedAudioFrames(): Long = encodedAudioFrames.get()
   private val streamClientListener = object: StreamClientListener {
     override fun onRequestKeyframe() {
       requestKeyframe()
@@ -85,10 +96,18 @@ class RtmpStream(
   }
 
   override fun getVideoDataImp(videoBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    if (info.size > 0) {
+      encodedVideoBytes.addAndGet(info.size.toLong())
+      encodedVideoFrames.incrementAndGet()
+    }
     rtmpClient.sendVideo(videoBuffer, info)
   }
 
   override fun getAudioDataImp(audioBuffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+    if (info.size > 0) {
+      encodedAudioBytes.addAndGet(info.size.toLong())
+      encodedAudioFrames.incrementAndGet()
+    }
     rtmpClient.sendAudio(audioBuffer, info)
   }
 }

@@ -96,8 +96,8 @@ class GlStreamInterface(private val context: Context): OnFrameAvailableListener,
   var autoHandleOrientation = false
   private var shouldHandleOrientation = true
   private var renderErrorCallback: RenderErrorCallback? = null
-  private var previewViewPort: ViewPort? = null
-  private var streamViewPort: ViewPort? = null
+  @Volatile private var previewViewPort: ViewPort? = null
+  @Volatile private var streamViewPort: ViewPort? = null
   private var surfaceHandlerThread: HandlerThread? = null
 
   private val sensorRotationManager = SensorRotationManager(context, true, true) { orientation, isPortrait ->

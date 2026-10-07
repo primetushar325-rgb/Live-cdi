@@ -306,7 +306,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
           handleServerPackets()
         }.exceptionOrNull()
         if (error != null) {
-          Log.e(TAG, "connection error", error)
+          Log.e(TAG, "RTMP connection operation failed (${error.javaClass.simpleName})")
           onMainThread {
             connectChecker.onConnectionFailed("Error configure stream, ${error.validMessage()}")
           }
@@ -494,7 +494,7 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
                 }
                 //We can ignore this errors. Some servers fail if this stream is not in use or don't implement this methods.
                 "releaseStream", "FCPublish" -> {
-                  Log.e(TAG, "$commandName failed: $description")
+                  Log.e(TAG, "$commandName failed (server rejected the RTMP command)")
                 }
                 else -> {
                   onMainThread {

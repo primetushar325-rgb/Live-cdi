@@ -40,6 +40,7 @@ import com.pedro.encoder.input.sources.audio.AudioSource
 import com.pedro.encoder.input.sources.audio.NoAudioSource
 import com.pedro.encoder.input.sources.video.NoVideoSource
 import com.pedro.encoder.input.sources.video.VideoSource
+import com.pedro.encoder.input.sources.video.VideoFileSource
 import com.pedro.encoder.utils.CodecUtil
 import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.encoder.video.GetVideoData
@@ -131,6 +132,11 @@ abstract class StreamBase(
     }
     val videoResult = videoSource.init(max(width, recordWidth), max(height, recordHeight), fps, rotation)
     if (videoResult) {
+      if (videoSource is VideoFileSource) {
+        glInterface.setSourceSize(videoSource.sourceWidth, videoSource.sourceHeight)
+      } else {
+        glInterface.setSourceSize(max(width, recordWidth), max(height, recordHeight))
+      }
       if (differentRecordResolution) {
         //using different record resolution
         if (rotation == 90 || rotation == 270) glInterface.setEncoderRecordSize(recordHeight, recordWidth)

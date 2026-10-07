@@ -67,6 +67,9 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
     packaging {
         resources {
             excludes += setOf(
@@ -86,17 +89,12 @@ dependencies {
     implementation(project(":rtmp"))
     implementation(project(":common"))
 
-    implementation(libs.androidx.core-ktx)
+    implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
-    implementation(libs.google-material)
-    implementation(libs.androidx.constraintlayout)
-    implementation(libs.androidx.recyclerview)
-    implementation(libs.androidx.lifecycle-runtime-ktx)
-    implementation(libs.androidx.lifecycle-service)
-    implementation(libs.androidx.lifecycle-viewmodel-ktx)
-    implementation(libs.androidx.security-crypto)
-    implementation(libs.kotlinx.coroutines-android)
-    implementation(libs.play-services-auth)
+    implementation(libs.google.material)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
 }

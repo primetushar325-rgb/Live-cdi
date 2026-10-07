@@ -65,7 +65,7 @@ class CommandsManagerAmf0: CommandsManager() {
     connect.writeHeader(socket)
     connect.writeBody(socket)
     sessionHistory.setPacket(commandId, "connect")
-    Log.i(TAG, "send $connect")
+    Log.i(TAG, "send connect command")
   }
 
   override suspend fun createStreamImp(socket: RtmpSocket) {
@@ -77,7 +77,7 @@ class CommandsManagerAmf0: CommandsManager() {
     releaseStream.writeHeader(socket)
     releaseStream.writeBody(socket)
     sessionHistory.setPacket(commandId, "releaseStream")
-    Log.i(TAG, "send $releaseStream")
+    Log.i(TAG, "send releaseStream command")
 
     val fcPublish = CommandAmf0("FCPublish", ++commandId, getCurrentTimestamp(), streamId,
         BasicHeader(ChunkType.TYPE_0, ChunkStreamId.OVER_STREAM.mark))
@@ -87,7 +87,7 @@ class CommandsManagerAmf0: CommandsManager() {
     fcPublish.writeHeader(socket)
     fcPublish.writeBody(socket)
     sessionHistory.setPacket(commandId, "FCPublish")
-    Log.i(TAG, "send $fcPublish")
+    Log.i(TAG, "send FCPublish command")
 
     val createStream = CommandAmf0("createStream", ++commandId, getCurrentTimestamp(), streamId,
         BasicHeader(ChunkType.TYPE_0, ChunkStreamId.OVER_CONNECTION.mark))
@@ -96,7 +96,7 @@ class CommandsManagerAmf0: CommandsManager() {
     createStream.writeHeader(socket)
     createStream.writeBody(socket)
     sessionHistory.setPacket(commandId, "createStream")
-    Log.i(TAG, "send $createStream")
+    Log.i(TAG, "send createStream command")
   }
 
   override suspend fun sendMetadataImp(socket: RtmpSocket) {
@@ -135,7 +135,7 @@ class CommandsManagerAmf0: CommandsManager() {
 
     metadata.writeHeader(socket)
     metadata.writeBody(socket)
-    Log.i(TAG, "send $metadata")
+    Log.i(TAG, "send metadata command")
   }
 
   override suspend fun sendPublishImp(socket: RtmpSocket) {
@@ -149,7 +149,7 @@ class CommandsManagerAmf0: CommandsManager() {
     publish.writeHeader(socket)
     publish.writeBody(socket)
     sessionHistory.setPacket(commandId, name)
-    Log.i(TAG, "send $publish")
+    Log.i(TAG, "send publish command")
   }
 
   override suspend fun sendCloseImp(socket: RtmpSocket) {
@@ -160,6 +160,6 @@ class CommandsManagerAmf0: CommandsManager() {
     closeStream.writeHeader(socket)
     closeStream.writeBody(socket)
     sessionHistory.setPacket(commandId, name)
-    Log.i(TAG, "send $closeStream")
+    Log.i(TAG, "send closeStream command")
   }
 }

@@ -131,7 +131,7 @@ abstract class CommandsManager {
   suspend fun readMessageResponse(socket: RtmpSocket): RtmpMessage {
     val message = RtmpMessage.getRtmpMessage(socket, readChunkSize, sessionHistory)
     sessionHistory.setReadHeader(message.header)
-    Log.i(TAG, "read $message")
+    Log.i(TAG, "received RTMP control/message packet")
     bytesRead += message.header.getPacketLength()
     return message
   }
