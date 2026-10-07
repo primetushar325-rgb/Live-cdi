@@ -133,7 +133,7 @@ abstract class StreamBase(
     val videoResult = videoSource.init(max(width, recordWidth), max(height, recordHeight), fps, rotation)
     if (videoResult) {
       if (videoSource is VideoFileSource) {
-        glInterface.setSourceSize(videoSource.sourceWidth, videoSource.sourceHeight)
+        glInterface.setSourceSize(videoSource.getSourceWidth(), videoSource.getSourceHeight())
       } else {
         glInterface.setSourceSize(max(width, recordWidth), max(height, recordHeight))
       }
