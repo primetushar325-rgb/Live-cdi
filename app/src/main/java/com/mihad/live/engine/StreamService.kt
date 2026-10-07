@@ -1431,7 +1431,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         if (currentRequest?.loopVideo == true || isStopping) return
         setSnapshot { it.copy(sourceStatus = "FINISHED") }
         SafeDiagnostics.event("SOURCE_VIDEO_FINISHED")
-        if (sessionStartElapsedMs != null && mutableSnapshot.value.state.isStreaming) {
+        if (sessionStartElapsedMs != null && mutableSnapshot.value.isStreaming) {
             // A finite, non-looping source ending is a clean session stop, not a pipeline failure.
             stopLive(explicit = false)
         }
