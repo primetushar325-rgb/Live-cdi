@@ -17,8 +17,8 @@ GitHub Actions runs `:app:testDebugUnitTest`, then assembles debug and release A
 - The repository contains a Gradle wrapper pinned to Gradle 8.14.3, Android Gradle Plugin 8.13.2, Kotlin 2.2.21 and JDK 17 in CI.
 - RootEncoder 2.7.0 source and its license are vendored. The app uses the real Android MediaCodec → GL → FLV/RTMP/RTMPS pipeline; sender packet counters advance only after the packet write/flush returns successfully.
 - `tools/vendor-rootencoder.py` reproduces the transport stages, decoder/source counts and successful packet counters from the pinned upstream source; it was run against RootEncoder 2.7.0 during this change.
-- The sandbox does not include a JDK or Android SDK, so local Gradle build/tests are unavailable. The most recent completed baseline CI run before this diagnostic change set was [run `37656142445`](https://github.com/primetushar325-rgb/Live-cdi/actions/runs/37656142445), which passed at commit `76d7248`.
-- **This diagnostic change set still requires its own GitHub Actions run.** The baseline APK/run above does not include these edits.
+- The sandbox does not include a JDK or Android SDK, so local Gradle build/tests are unavailable. The diagnostic change set passed [Android CI run `37660772805`](https://github.com/primetushar325-rgb/Live-cdi/actions/runs/37660772805) at commit `18a1ae0`: JVM unit tests, debug/release APK assembly, lint (non-blocking), and artifact upload all succeeded.
+- Downloadable APK artifact: [MihadLive-APK-12](https://github.com/primetushar325-rgb/Live-cdi/actions/runs/37660772805/artifacts/11500861069).
 
 ## Required device / YouTube validation before production claims
 
