@@ -29,6 +29,7 @@ import android.view.Surface;
 import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 
+import com.pedro.common.MonotonicTimestampNormalizer;
 import com.pedro.common.TimeUtils;
 import com.pedro.common.av1.Av1Parser;
 import com.pedro.common.av1.Obu;
@@ -45,6 +46,7 @@ import com.pedro.encoder.utils.yuv.YUVUtil;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Created by pedro on 19/01/17.
@@ -69,6 +71,9 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
   private int rotation = 90;
   private int iFrameInterval = 2;
   private long firstTimestamp = 0;
+  private final MonotonicTimestampNormalizer timestampNormalizer = new MonotonicTimestampNormalizer();
+  private final AtomicInteger loopTimestampDiagnosticsRemaining = new AtomicInteger(0);
+  private volatile String loopTimestampDiagnosticPath = "video";
   //for disable video
   private final FpsLimiter fpsLimiter = new FpsLimiter();
   private FormatVideoEncoder formatVideoEncoder = FormatVideoEncoder.YUV420Dynamical;
@@ -82,6 +87,11 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
     typeError = CodecUtil.CodecTypeError.VIDEO_CODEC;
     type = CodecUtil.H264_MIME;
     TAG = "VideoEncoder";
+  }
+
+  public void startLoopTimestampDiagnostics(String path, int frameCount) {
+    loopTimestampDiagnosticPath = path;
+    loopTimestampDiagnosticsRemaining.set(Math.max(0, frameCount));
   }
 
   public boolean prepareVideoEncoder(int width, int height, int fps, int bitRate, int rotation,
@@ -199,7 +209,10 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
 
   @Override
   public void start(boolean resetTs) {
-    if (resetTs) firstTimestamp = 0;
+    if (resetTs) {
+      firstTimestamp = 0;
+      timestampNormalizer.reset();
+    }
     forceKey = false;
     shouldReset = resetTs;
     spsPpsSetted = false;
@@ -439,6 +452,21 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
     spsPpsSetted = sendSPSandPPS(mediaFormat);
   }
 
+  private void normalizeOutputTimestamp(MediaCodec.BufferInfo info) {
+    if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) return;
+    long sourceTimestampNanos = info.presentationTimeUs * 1_000L;
+    long frameDurationNanos = Math.max(1L, 1_000_000_000L / Math.max(1, fps));
+    info.presentationTimeUs = timestampNormalizer.normalize(sourceTimestampNanos, frameDurationNanos) / 1_000L;
+    int diagnosticsRemaining = loopTimestampDiagnosticsRemaining.getAndUpdate(remaining ->
+        remaining > 0 ? remaining - 1 : 0);
+    if (diagnosticsRemaining > 0) {
+      boolean keyframe = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+      Log.i(TAG, "loop-pts encoded path=" + loopTimestampDiagnosticPath + " remaining=" + diagnosticsRemaining +
+          " ptsUs=" + info.presentationTimeUs + " flags=" + info.flags + " keyframe=" + keyframe +
+          " size=" + info.size);
+    }
+  }
+
   @Override
   protected void checkBuffer(@NonNull ByteBuffer byteBuffer, @NonNull MediaCodec.BufferInfo bufferInfo) {
     if (forceKey && Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
@@ -498,6 +526,7 @@ public class VideoEncoder extends BaseEncoder implements GetCameraData {
       if (firstTimestamp == 0) firstTimestamp = bufferInfo.presentationTimeUs;
       bufferInfo.presentationTimeUs -= firstTimestamp;
     }
+    normalizeOutputTimestamp(bufferInfo);
   }
 
   @Override

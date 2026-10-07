@@ -868,7 +868,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun bitrateFor(targetQuality: VideoQuality): Int = when (bitrateMode) {
-        BitrateMode.AUTO -> if (targetQuality == VideoQuality.P1080) 4_000_000 else 2_200_000
+        BitrateMode.AUTO -> if (targetQuality == VideoQuality.P1080) 4_000_000 else 3_000_000
         BitrateMode.RECOMMENDED -> if (targetQuality == VideoQuality.P1080) 5_000_000 else 2_800_000
         BitrateMode.CUSTOM -> customBitrateBps.coerceIn(1_000_000, if (targetQuality == VideoQuality.P1080) 8_000_000 else 5_000_000)
     }
@@ -1165,7 +1165,7 @@ class MainActivity : AppCompatActivity() {
         }
         body.addView(studio, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
         body.addSpace(8)
-        body.addView(label("Packet counters prove only successful local RTMP socket writes. YouTube receipt and broadcast LIVE status are not available from RTMP callbacks; verify the incoming preview and broadcast state in Control Room.", 10f, R.color.ml_text_muted))
+        body.addView(label("Local RTMP writes are not confirmation on YouTube. Check YouTube Studio → Live → Stream health for the received preview and broadcast status.", 10f, R.color.ml_text_muted))
         body.addSpace(18)
         body.addView(button("STOP LIVE", primary = true).apply {
             setBackgroundTintList(android.content.res.ColorStateList.valueOf(colorResource(R.color.ml_live)))
@@ -1253,7 +1253,7 @@ class MainActivity : AppCompatActivity() {
             StreamState.RTMP_HANDSHAKE -> "TCP/TLS socket opened; exchanging the RTMP handshake."
             StreamState.RTMP_CONNECTED -> "RTMP handshake and server connect response succeeded. Waiting for NetStream.Publish.Start."
             StreamState.PUBLISHING -> "The RTMP server returned NetStream.Publish.Start. Checking actual H.264/AAC packet writes."
-            StreamState.MEDIA_FLOWING -> "Raw video packet writes are confirmed locally. Local socket writes do not prove YouTube receipt."
+            StreamState.MEDIA_FLOWING -> "LOCAL RTMP WRITES OK · NOT CONFIRMED ON YOUTUBE. Check YouTube Studio → Live → Stream health."
             StreamState.YOUTUBE_INGEST_DETECTED -> "Official YouTube ingest evidence received."
             StreamState.LIVE -> "Official YouTube broadcast-LIVE evidence received."
             StreamState.RECONNECTING -> "Retrying the RTMP transport; encoder and session timer are retained."

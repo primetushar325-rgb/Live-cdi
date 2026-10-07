@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
+import android.util.Log
 import android.view.TextureView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -27,6 +28,7 @@ import com.pedro.encoder.input.sources.audio.AudioFileSource
 import com.pedro.encoder.input.sources.audio.NoAudioSource
 import com.pedro.encoder.input.sources.video.VideoFileSource
 import com.pedro.encoder.utils.CodecUtil
+import com.pedro.encoder.video.FormatVideoEncoder
 import com.pedro.library.rtmp.RtmpStream
 import com.pedro.library.util.FpsListener
 import com.pedro.library.util.streamclient.RtmpStreamClient
@@ -84,6 +86,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     @Volatile private var reconnectCount = 0
     @Volatile private var loopCount = 0L
     @Volatile private var currentVideoTargetBps = 0
+    @Volatile private var activeVideoEncoderFallbackStatus: String? = null
     @Volatile private var lastAdaptiveChangeMs = 0L
     @Volatile private var stableSinceMs = 0L
     @Volatile private var lastEncodedFrames = 0L
@@ -93,6 +96,10 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     @Volatile private var attemptKeyframeBaseline = 0L
     @Volatile private var attemptVideoConfigBaseline = 0L
     @Volatile private var attemptAudioConfigBaseline = 0L
+    @Volatile private var lastKeyframeRequestAtMs = 0L
+    @Volatile private var keyframeWatchdogStartedAtMs = 0L
+    @Volatile private var lastSourceVideoFrames = 0L
+    @Volatile private var lastSourceVideoProgressMs = 0L
     @Volatile private var attemptSourceVideoBaseline = 0L
     @Volatile private var attemptSourceAudioBaseline = 0L
     @Volatile private var attemptEncodedVideoBaseline = 0L
@@ -336,7 +343,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                         serverUrlValid = true,
                         streamKeyPresent = request.streamKey.isNotBlank(),
                         sourceStatus = "READY",
-                        videoEncoderStatus = "READY",
+                        videoEncoderStatus = activeVideoEncoderFallbackStatus?.let { "READY · $it" } ?: "READY",
                         audioEncoderStatus = if (request.videoAsset.hasAudio) "READY" else "NOT USED",
                         handshakeStatus = "NOT STARTED",
                         connectStatus = "NOT STARTED",
@@ -665,6 +672,10 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         attemptStartedAtMs = SystemClock.elapsedRealtime()
         publishRequestAtMs = 0L
         publishAcceptedAtMs = 0L
+        lastKeyframeRequestAtMs = 0L
+        keyframeWatchdogStartedAtMs = 0L
+        lastSourceVideoFrames = active?.getDecodedSourceVideoFrames() ?: 0L
+        lastSourceVideoProgressMs = SystemClock.elapsedRealtime()
         setSnapshot {
             it.copy(
                 handshakeStatus = "NOT STARTED",
@@ -870,6 +881,8 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             )
         }
         updateNotification()
+        activeVideoEncoderFallbackStatus = null
+        var videoEncoderFallbackStatus: String? = null
         try {
             withContext(Dispatchers.IO) {
                 runCatching { stream?.release() }
@@ -879,6 +892,15 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     if (looped) {
                         loopCount += 1
                         SafeDiagnostics.event("SOURCE_VIDEO_LOOP")
+                        if (mutableSnapshot.value.state in setOf(CONNECTING, RTMP_HANDSHAKE, RTMP_CONNECTED, PUBLISHING, MEDIA_FLOWING, RECONNECTING)) {
+                            val activeStream = stream
+                            if (activeStream != null) {
+                                activeStream.startLoopTimestampDiagnostics(180)
+                                activeStream.requestKeyframe()
+                                lastKeyframeRequestAtMs = SystemClock.elapsedRealtime()
+                                Log.i(TAG_LOOP_TIMESTAMP, "source loop callback elapsedMs=${SystemClock.elapsedRealtime()} loop=$loopCount; keyframe requested")
+                            }
+                        }
                     } else if (!request.loopVideo && !isStopping) {
                         serviceScope.launch { sourceFinished() }
                     }
@@ -906,10 +928,10 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 }
                 val capability = EncoderCapabilities.check(request.canvas(), request.fps, request.videoBitrateBps())
                 if (!capability.supported) throw UnsupportedOperationException(capability.reason ?: "Encoder configuration unsupported")
+                val audioHardware = runCatching {
+                    CodecUtil.getAllHardwareEncoders(CodecUtil.AAC_MIME).isNotEmpty()
+                }.getOrDefault(false)
                 if (capability.hardwareAvailable) {
-                    val audioHardware = runCatching {
-                        CodecUtil.getAllHardwareEncoders(CodecUtil.AAC_MIME).isNotEmpty()
-                    }.getOrDefault(false)
                     active.forceCodecType(
                         CodecUtil.CodecType.HARDWARE,
                         if (audioHardware) CodecUtil.CodecType.HARDWARE else CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
@@ -917,7 +939,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 }
                 val canvas = request.canvas()
                 SafeDiagnostics.event("ENCODER_PREPARING")
-                val videoReady = active.prepareVideo(
+                fun prepareVideo() = active.prepareVideo(
                     canvas.width,
                     canvas.height,
                     request.videoBitrateBps(),
@@ -925,6 +947,35 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     2,
                     0
                 )
+                var videoReady = prepareVideo()
+                if (!videoReady) {
+                    val softwareSurfaceAvailable = runCatching {
+                        CodecUtil.getAllSoftwareEncoders(CodecUtil.H264_MIME).any { encoder ->
+                            encoder.getCapabilitiesForType(CodecUtil.H264_MIME).colorFormats
+                                .any { it == FormatVideoEncoder.SURFACE.getFormatCodec() }
+                        }
+                    }.getOrDefault(false)
+                    val fallbackType = if (softwareSurfaceAvailable) {
+                        CodecUtil.CodecType.SOFTWARE
+                    } else {
+                        CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
+                    }
+                    videoEncoderFallbackStatus = if (softwareSurfaceAvailable) {
+                        "SOFTWARE FALLBACK"
+                    } else {
+                        "FIRST-COMPATIBLE FALLBACK"
+                    }
+                    activeVideoEncoderFallbackStatus = videoEncoderFallbackStatus
+                    active.forceCodecType(
+                        fallbackType,
+                        if (audioHardware) CodecUtil.CodecType.HARDWARE else CodecUtil.CodecType.FIRST_COMPATIBLE_FOUND
+                    )
+                    SafeDiagnostics.event("VIDEO_ENCODER_FALLBACK_STARTED")
+                    videoReady = prepareVideo()
+                    SafeDiagnostics.event(
+                        if (videoReady) "VIDEO_ENCODER_FALLBACK_SUCCEEDED" else "VIDEO_ENCODER_FALLBACK_FAILED"
+                    )
+                }
                 if (!videoReady) throw IllegalStateException("Video encoder initialization failed")
                 active.setVideoCodec(VideoCodec.H264)
                 val sampleRate = request.videoAsset.audioSampleRate ?: 48_000
@@ -945,7 +996,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     state = ENCODER_READY,
                     statusText = "ENGINE READY",
                     errorMessage = null,
-                    engineStatus = "READY",
+                    engineStatus = videoEncoderFallbackStatus?.let { "READY · $it" } ?: "READY",
                     rtmpStatus = "DISCONNECTED",
                     ingestStatus = "RTMP NOT CONNECTED",
                     width = request.canvas().width,
@@ -953,7 +1004,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     targetFps = request.fps,
                     reconnectCount = reconnectCount,
                     sourceStatus = "READY",
-                    videoEncoderStatus = "READY",
+                    videoEncoderStatus = videoEncoderFallbackStatus?.let { "READY · $it" } ?: "READY",
                     audioEncoderStatus = if (request.videoAsset.hasAudio) "READY" else "NOT USED",
                     encodedAudioFrames = stream?.getEncodedAudioFrames() ?: 0L,
                     sourceVideoFrames = stream?.getDecodedSourceVideoFrames() ?: 0L,
@@ -972,11 +1023,17 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     state = ERROR,
                     statusText = "ERROR",
                     errorMessage = friendlyError(e.message.orEmpty()),
-                    engineStatus = "ERROR",
+                    engineStatus = if (videoEncoderFallbackStatus != null) "ERROR · FALLBACK FAILED" else "ERROR",
                     rtmpStatus = "DISCONNECTED",
                     ingestStatus = "RTMP NOT CONNECTED",
                     sourceStatus = "ERROR",
-                    videoEncoderStatus = if (e.message.orEmpty().contains("video", true) || e.message.orEmpty().contains("encoder", true)) "ERROR" else "NOT READY",
+                    videoEncoderStatus = if (videoEncoderFallbackStatus != null) {
+                        "ERROR · ${videoEncoderFallbackStatus} FAILED"
+                    } else if (e.message.orEmpty().contains("video", true) || e.message.orEmpty().contains("encoder", true)) {
+                        "ERROR"
+                    } else {
+                        "NOT READY"
+                    },
                     audioEncoderStatus = if (!request.videoAsset.hasAudio) "NOT USED" else if (e.message.orEmpty().contains("audio", true)) "ERROR" else "NOT READY"
                 )
             }
@@ -1080,45 +1137,86 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     PUBLISHING, MEDIA_FLOWING -> {
                         val assessment = assessIngest(active, request)
                         val publishedAt = publishAcceptedAtMs
-                        if (publishedAt > 0L && now - publishedAt >= MEDIA_STARTUP_TIMEOUT_MS && !assessment.localMediaReady) {
-                            val failure = MediaPipelineDiagnosis.firstFailure(mediaPipelineEvidence(active, request))
-                            val actual = failure ?: MediaPipelineFailure(
-                                "MEDIA_READINESS_TIMEOUT",
-                                "MEDIA PACKET READINESS",
-                                "The required local video/audio packet evidence did not become ready after publish acceptance."
-                            )
-                            failAndStopMedia(actual.code, actual.stage, actual.detail)
+                        val currentAttemptVideoPackets = attemptVideoPackets(active)
+                        val currentAttemptAudioPackets = attemptAudioPackets(active)
+                        val rtmpClient = active.getStreamClient() as? RtmpStreamClient
+                        val videoLastAt = rtmpClient?.getLastVideoPacketAtMs() ?: 0L
+                        val keyframeLastAt = rtmpClient?.getLastVideoKeyframeAtMs() ?: 0L
+                        val audioLastAt = rtmpClient?.getLastAudioPacketAtMs() ?: 0L
+                        val currentAttemptKeyframes = ((rtmpClient?.getSentVideoKeyframes() ?: 0L) - attemptKeyframeBaseline).coerceAtLeast(0L)
+                        val frames = active.getEncodedVideoFrames()
+                        val attemptFrames = (frames - attemptEncodedVideoBaseline).coerceAtLeast(0L)
+                        val hasVideoOutput = currentAttemptVideoPackets > 0L || attemptFrames > 0L
+                        val sourceFrames = active.getDecodedSourceVideoFrames()
+                        val currentAttemptSourceFrames = (sourceFrames - attemptSourceVideoBaseline).coerceAtLeast(0L)
+                        if (hasVideoOutput && keyframeWatchdogStartedAtMs == 0L) {
+                            keyframeWatchdogStartedAtMs = now
+                        }
+                        if (currentAttemptSourceFrames > 0L && sourceFrames > lastSourceVideoFrames) {
+                            lastSourceVideoFrames = sourceFrames
+                            lastSourceVideoProgressMs = now
+                        }
+                        val keyframeReferenceAt = if (currentAttemptKeyframes > 0L && keyframeLastAt > 0L) {
+                            keyframeLastAt
                         } else {
-                            val currentAttemptVideoPackets = attemptVideoPackets(active)
-                            val currentAttemptAudioPackets = attemptAudioPackets(active)
-                            val rtmpClient = active.getStreamClient() as? RtmpStreamClient
-                            val videoLastAt = rtmpClient?.getLastVideoPacketAtMs() ?: 0L
-                            val keyframeLastAt = rtmpClient?.getLastVideoKeyframeAtMs() ?: 0L
-                            val audioLastAt = rtmpClient?.getLastAudioPacketAtMs() ?: 0L
-                            val currentAttemptKeyframes = ((rtmpClient?.getSentVideoKeyframes() ?: 0L) - attemptKeyframeBaseline).coerceAtLeast(0L)
-                            if (currentAttemptVideoPackets > 0L && videoLastAt > 0L && now - videoLastAt > MEDIA_PACKET_STALL_MS) {
+                            keyframeWatchdogStartedAtMs
+                        }
+                        val keyframeDecision = if (hasVideoOutput) {
+                            KeyframeWatchdog.decide(
+                                now,
+                                keyframeReferenceAt,
+                                lastKeyframeRequestAtMs,
+                                requestIntervalMs = KEYFRAME_REQUEST_INTERVAL_MS,
+                                failAfterMs = KEYFRAME_STALL_MS
+                            )
+                        } else {
+                            KeyframeWatchdogAction.WAIT
+                        }
+                        if (keyframeDecision == KeyframeWatchdogAction.REQUEST_KEYFRAME) {
+                            active.requestKeyframe()
+                            lastKeyframeRequestAtMs = now
+                            SafeDiagnostics.event("KEYFRAME_WATCHDOG_REQUESTED")
+                        }
+                        val startupFailure = if (
+                            publishedAt > 0L && now - publishedAt >= MEDIA_STARTUP_TIMEOUT_MS && !assessment.localMediaReady
+                        ) {
+                            MediaPipelineDiagnosis.firstFailure(mediaPipelineEvidence(active, request))
+                        } else null
+                        when {
+                            keyframeDecision == KeyframeWatchdogAction.FAIL -> {
+                                val age = (now - keyframeReferenceAt).coerceAtLeast(0L)
+                                failAndStopMedia(
+                                    "MEDIA_KEYFRAME_STALLED",
+                                    "H.264 KEYFRAME FLOW",
+                                    "No successful keyframe write followed encoder requests; the last keyframe was ${age} ms ago."
+                                )
+                            }
+                            startupFailure != null && !(startupFailure.code == "MEDIA_KEYFRAME_NOT_SENT" && hasVideoOutput) -> {
+                                failAndStopMedia(startupFailure.code, startupFailure.stage, startupFailure.detail)
+                            }
+                            currentAttemptSourceFrames > 0L && now - lastSourceVideoProgressMs > SOURCE_VIDEO_STALL_MS -> {
+                                failAndStopMedia(
+                                    "MEDIA_SOURCE_VIDEO_STALLED",
+                                    "VIDEO SOURCE / DECODER",
+                                    "The video decoder stopped producing source frames during the active publish."
+                                )
+                            }
+                            currentAttemptVideoPackets > 0L && videoLastAt > 0L && now - videoLastAt > MEDIA_PACKET_STALL_MS -> {
                                 failAndStopMedia(
                                     "MEDIA_VIDEO_PACKET_STALLED",
                                     "VIDEO PACKET FLOW",
                                     "Video packet writes stopped; the last successful video packet was ${now - videoLastAt} ms ago."
                                 )
-                            } else if (request.videoAsset.hasAudio && currentAttemptAudioPackets > 0L &&
-                                audioLastAt > 0L && now - audioLastAt > MEDIA_PACKET_STALL_MS) {
+                            }
+                            request.videoAsset.hasAudio && currentAttemptAudioPackets > 0L &&
+                                audioLastAt > 0L && now - audioLastAt > MEDIA_PACKET_STALL_MS -> {
                                 failAndStopMedia(
                                     "MEDIA_AUDIO_PACKET_STALLED",
                                     "AUDIO PACKET FLOW",
                                     "Audio packet writes stopped; the last successful audio packet was ${now - audioLastAt} ms ago."
                                 )
-                            } else if (currentAttemptKeyframes > 0L && keyframeLastAt > 0L &&
-                                now - keyframeLastAt > KEYFRAME_STALL_MS) {
-                                failAndStopMedia(
-                                    "MEDIA_KEYFRAME_STALLED",
-                                    "H.264 KEYFRAME FLOW",
-                                    "Keyframe writes stopped; the last successful keyframe was ${now - keyframeLastAt} ms ago."
-                                )
-                            } else {
-                                val frames = active.getEncodedVideoFrames()
-                                val attemptFrames = (frames - attemptEncodedVideoBaseline).coerceAtLeast(0L)
+                            }
+                            else -> {
                                 val bytes = (rtmpClient?.getSuccessfulMediaBytes() ?: 0L)
                                 if (attemptFrames > 0L && frames > lastEncodedFrames) {
                                     lastEncodedFrames = frames
@@ -1215,6 +1313,13 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         applyIngestAssessment(assessIngest(active, request))
     }
 
+    private fun requestKeyframeAfterBitrateChange(active: RtmpStream, now: Long) {
+        if (lastKeyframeRequestAtMs > 0L && now - lastKeyframeRequestAtMs < KEYFRAME_REQUEST_INTERVAL_MS) return
+        active.requestKeyframe()
+        lastKeyframeRequestAtMs = now
+        SafeDiagnostics.event("KEYFRAME_REQUESTED_AFTER_BITRATE_CHANGE")
+    }
+
     private fun considerAdaptiveBitrate(active: RtmpStream, request: StreamRequest, now: Long) {
         if (request.bitrateMode != BitrateMode.AUTO || now - lastAdaptiveChangeMs < ADAPTIVE_INTERVAL_MS) return
         val client = active.getStreamClient()
@@ -1227,6 +1332,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             val next = max(lowerBound, (currentVideoTargetBps * 0.85f).toInt())
             if (next < currentVideoTargetBps) {
                 active.setVideoBitrateOnFly(next)
+                requestKeyframeAfterBitrateChange(active, now)
                 currentVideoTargetBps = next
                 lastAdaptiveChangeMs = now
                 lastAdaptDroppedFrames = dropped
@@ -1240,6 +1346,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             val next = min(ceiling, max(currentVideoTargetBps + 1, (currentVideoTargetBps * 1.05f).toInt()))
             if (next > currentVideoTargetBps) {
                 active.setVideoBitrateOnFly(next)
+                requestKeyframeAfterBitrateChange(active, now)
                 currentVideoTargetBps = next
                 lastAdaptiveChangeMs = now
                 stableSinceMs = now
@@ -1323,7 +1430,11 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     private suspend fun sourceFinished() {
         if (currentRequest?.loopVideo == true || isStopping) return
         setSnapshot { it.copy(sourceStatus = "FINISHED") }
-        fail("SOURCE_FINISHED", "Video finished. Stop Live before starting another video.")
+        SafeDiagnostics.event("SOURCE_VIDEO_FINISHED")
+        if (sessionStartElapsedMs != null && mutableSnapshot.value.state.isStreaming) {
+            // A finite, non-looping source ending is a clean session stop, not a pipeline failure.
+            stopLive(explicit = false)
+        }
     }
 
     private fun updateNetworkState(connected: Boolean) {
@@ -1349,11 +1460,12 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
 
     private fun updateState(next: StreamState, engine: String, rtmp: String, ingest: String) {
         transition(next)
+        val visibleEngine = activeVideoEncoderFallbackStatus?.let { "$engine · $it" } ?: engine
         setSnapshot {
             it.copy(
                 state = next,
                 statusText = statusFor(next),
-                engineStatus = engine,
+                engineStatus = visibleEngine,
                 rtmpStatus = rtmp,
                 ingestStatus = ingest,
                 networkConnected = networkConnected,
@@ -1701,8 +1813,11 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         private const val PUBLISH_RESPONSE_TIMEOUT_MS = 15_000L
         private const val MEDIA_STARTUP_TIMEOUT_MS = 15_000L
         private const val MEDIA_PACKET_STALL_MS = 10_000L
-        private const val KEYFRAME_STALL_MS = 10_000L
+        private const val SOURCE_VIDEO_STALL_MS = 10_000L
+        private const val KEYFRAME_REQUEST_INTERVAL_MS = 2_000L
+        private const val KEYFRAME_STALL_MS = 20_000L
         private const val ENCODER_STALL_MS = 10_000L
+        private const val TAG_LOOP_TIMESTAMP = "MihadLoopPts"
         private const val TRANSPORT_STALL_MS = 18_000L
         private const val ADAPTIVE_INTERVAL_MS = 20_000L
         private const val BITRATE_RECOVERY_MS = 60_000L

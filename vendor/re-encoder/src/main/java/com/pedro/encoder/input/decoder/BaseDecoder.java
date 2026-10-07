@@ -242,13 +242,19 @@ public abstract class BaseDecoder {
           sampleSize = extractor.readFrame(input);
           long ts = TimeUtils.getCurrentTimeMicro() - startTs;
           sleepTime = extractor.getSleepTime(ts);
-          finished = !extractor.advance();
-          if (finished) {
-            if (!loopMode) {
-              codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
-            }
+          finished = sampleSize < 0 || !extractor.advance();
+          if (finished && !loopMode) {
+            codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);
           } else {
-            codec.queueInputBuffer(inIndex, 0, sampleSize, ts + sleepTime, 0);
+            // Decoder input PTS comes from elapsed time (not the container's sample PTS), so it
+            // stays monotonic across this seek and keeps the video/audio timelines continuous.
+            codec.queueInputBuffer(inIndex, 0, Math.max(0, sampleSize), ts + sleepTime, 0);
+            if (finished) {
+              // Rewind only after readSampleData copied the last sample into this codec buffer.
+              // Without this seek the old loop callback fired once while decoding then stalled.
+              extractor.seekTo(0);
+              looped = true;
+            }
           }
         }
         int outIndex = codec.dequeueOutputBuffer(bufferInfo, 10000);
@@ -262,13 +268,9 @@ public abstract class BaseDecoder {
           }
           boolean render = decodeOutput(output, timeStamp);
           codec.releaseOutputBuffer(outIndex, render && bufferInfo.size != 0);
-          if (finished) {
-            if (loopMode) {
-              looped = true;
-            } else {
-              Log.i(TAG, "end of file");
-              shouldFinish = true;
-            }
+          if (finished && !loopMode) {
+            Log.i(TAG, "end of file");
+            shouldFinish = true;
           }
         }
       }

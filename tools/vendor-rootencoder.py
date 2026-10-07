@@ -727,6 +727,243 @@ def main() -> None:
     patch(gl, *GL_START_SIZE)
     patch(gl, *GL_SOURCE_SIZE_METHODS)
 
+    # Preserve the monotonic PTS normalizer as a reproducible vendor patch.
+    normalizer_source = ROOT / "tools/rootencoder-patches/MonotonicTimestampNormalizer.kt"
+    normalizer_target = VENDOR / "re-common/src/main/java/com/pedro/common/MonotonicTimestampNormalizer.kt"
+    normalizer_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(normalizer_source, normalizer_target)
+
+    # Rewind file extractors at EOS in loop mode, but only after copying the final sample
+    # into MediaCodec. Decoder input PTS is elapsed-time based and remains one A/V timeline.
+    base_decoder = VENDOR / "re-encoder/src/main/java/com/pedro/encoder/input/decoder/BaseDecoder.java"
+    patch(
+        base_decoder,
+        "          sampleSize = extractor.readFrame(input);\n"
+        "          long ts = TimeUtils.getCurrentTimeMicro() - startTs;\n"
+        "          sleepTime = extractor.getSleepTime(ts);\n"
+        "          finished = !extractor.advance();\n"
+        "          if (finished) {\n"
+        "            if (!loopMode) {\n"
+        "              codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);\n"
+        "            }\n"
+        "          } else {\n"
+        "            codec.queueInputBuffer(inIndex, 0, sampleSize, ts + sleepTime, 0);\n"
+        "          }",
+        "          sampleSize = extractor.readFrame(input);\n"
+        "          long ts = TimeUtils.getCurrentTimeMicro() - startTs;\n"
+        "          sleepTime = extractor.getSleepTime(ts);\n"
+        "          finished = sampleSize < 0 || !extractor.advance();\n"
+        "          if (finished && !loopMode) {\n"
+        "            codec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM);\n"
+        "          } else {\n"
+        "            // Decoder input PTS comes from elapsed time (not the container's sample PTS), so it\n"
+        "            // stays monotonic across this seek and keeps the video/audio timelines continuous.\n"
+        "            codec.queueInputBuffer(inIndex, 0, Math.max(0, sampleSize), ts + sleepTime, 0);\n"
+        "            if (finished) {\n"
+        "              // Rewind only after readSampleData copied the last sample into this codec buffer.\n"
+        "              // Without this seek the old loop callback fired once while decoding then stalled.\n"
+        "              extractor.seekTo(0);\n"
+        "              looped = true;\n"
+        "            }\n"
+        "          }",
+    )
+    patch(
+        base_decoder,
+        "          if (finished) {\n"
+        "            if (loopMode) {\n"
+        "              looped = true;\n"
+        "            } else {\n"
+        "              Log.i(TAG, \"end of file\");\n"
+        "              shouldFinish = true;\n"
+        "            }\n"
+        "          }",
+        "          if (finished && !loopMode) {\n"
+        "            Log.i(TAG, \"end of file\");\n"
+        "            shouldFinish = true;\n"
+        "          }",
+    )
+
+    # SurfaceTexture can repeat or reset its clock. Normalize one timestamp once per GL frame
+    # and feed the identical value to stream and record encoders.
+    patch(gl, "import android.os.HandlerThread\n", "import android.os.HandlerThread\nimport android.util.Log\n")
+    patch(gl, "import androidx.annotation.RequiresApi\n", "import androidx.annotation.RequiresApi\nimport com.pedro.common.MonotonicTimestampNormalizer\n")
+    patch(
+        gl,
+        "import java.util.concurrent.atomic.AtomicBoolean\n",
+        "import java.util.concurrent.atomic.AtomicBoolean\nimport java.util.concurrent.atomic.AtomicInteger\n",
+    )
+    patch(
+        gl,
+        "  private val fpsLimiter = FpsLimiter()\n  private val forceRender = ForceRenderer()",
+        "  private val fpsLimiter = FpsLimiter()\n  private val forceRender = ForceRenderer()\n"
+        "  private val presentationTimestampNormalizer = MonotonicTimestampNormalizer()\n"
+        "  private val loopTimestampDiagnosticsRemaining = AtomicInteger(0)\n"
+        "  @Volatile private var nominalFrameDurationNanos = 33_333_333L\n"
+        "  private val TAG = \"GlStreamInterface\"",
+    )
+    patch(
+        gl,
+        "  override fun getEncoderSize(): Point {\n    return Point(encoderWidth, encoderHeight)\n  }\n",
+        "  override fun getEncoderSize(): Point {\n    return Point(encoderWidth, encoderHeight)\n  }\n\n"
+        "  fun startLoopTimestampDiagnostics(frameCount: Int) {\n"
+        "    loopTimestampDiagnosticsRemaining.set(frameCount.coerceAtLeast(0))\n  }\n",
+    )
+    patch(gl, "  override fun start() {\n    threadQueue.clear()", "  override fun start() {\n    presentationTimestampNormalizer.reset()\n    threadQueue.clear()")
+    patch(
+        gl,
+        "    if (surfaceManagerEncoder.isReady || surfaceManagerEncoderRecord.isReady || surfaceManagerPhoto.isReady) {\n"
+        "      mainRender.drawFilters(false)\n"
+        "    }\n"
+        "    // render VideoEncoder (stream and record)\n"
+        "    if (surfaceManagerEncoder.isReady && mainRender.isReady() && !limitFps) {\n"
+        "      val w = if (muteVideo) 0 else encoderWidth\n"
+        "      val h = if (muteVideo) 0 else encoderHeight\n"
+        "      if (surfaceManagerEncoder.makeCurrent()) {\n"
+        "        mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,\n"
+        "          isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)\n"
+        "        surfaceManagerEncoder.setPresentationTime(mainRender.getSurfaceTexture().timestamp)\n"
+        "        surfaceManagerEncoder.swapBuffer()\n"
+        "      }\n"
+        "    }\n"
+        "    // render VideoEncoder (record if the resolution is different than stream)\n"
+        "    if (surfaceManagerEncoderRecord.isReady && mainRender.isReady() && !limitFps) {\n"
+        "      val w = if (muteVideo) 0 else encoderRecordWidth\n"
+        "      val h = if (muteVideo) 0 else encoderRecordHeight\n"
+        "      if (surfaceManagerEncoderRecord.makeCurrent()) {\n"
+        "        mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,\n"
+        "          isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)\n"
+        "        // Fix: same timestamp fix for the dedicated record surface\n"
+        "        surfaceManagerEncoderRecord.setPresentationTime(mainRender.getSurfaceTexture().timestamp)\n"
+        "        surfaceManagerEncoderRecord.swapBuffer()\n"
+        "      }\n"
+        "    }",
+        "    if (surfaceManagerEncoder.isReady || surfaceManagerEncoderRecord.isReady || surfaceManagerPhoto.isReady) {\n"
+        "      mainRender.drawFilters(false)\n"
+        "    }\n"
+        "    val encoderPresentationTimeNanos = if (!limitFps && mainRender.isReady() &&\n"
+        "      (surfaceManagerEncoder.isReady || surfaceManagerEncoderRecord.isReady)) {\n"
+        "      val sourceTimestampNanos = mainRender.getSurfaceTexture().timestamp\n"
+        "      val monotonicTimestampNanos = presentationTimestampNormalizer.normalize(\n"
+        "        sourceTimestampNanos,\n        nominalFrameDurationNanos\n      )\n"
+        "      val diagnosticsRemaining = loopTimestampDiagnosticsRemaining.getAndUpdate { remaining ->\n"
+        "        if (remaining > 0) remaining - 1 else 0\n      }\n"
+        "      if (diagnosticsRemaining > 0) {\n"
+        "        Log.i(TAG, \"loop-pts gl remaining=$diagnosticsRemaining sourceSurfaceTextureNs=$sourceTimestampNanos \" +\n"
+        "          \"monotonicInputNs=$monotonicTimestampNanos streamSurface=${surfaceManagerEncoder.isReady} \" +\n"
+        "          \"recordSurface=${surfaceManagerEncoderRecord.isReady}\")\n      }\n"
+        "      monotonicTimestampNanos\n    } else {\n      null\n    }\n"
+        "    // render VideoEncoder (stream and record) on one shared, monotonic timestamp timeline.\n"
+        "    if (surfaceManagerEncoder.isReady && mainRender.isReady() && !limitFps) {\n"
+        "      val w = if (muteVideo) 0 else encoderWidth\n"
+        "      val h = if (muteVideo) 0 else encoderHeight\n"
+        "      if (surfaceManagerEncoder.makeCurrent()) {\n"
+        "        mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,\n"
+        "          isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)\n"
+        "        surfaceManagerEncoder.setPresentationTime(encoderPresentationTimeNanos!!)\n"
+        "        surfaceManagerEncoder.swapBuffer()\n      }\n    }\n"
+        "    // render VideoEncoder (record if the resolution is different than stream)\n"
+        "    if (surfaceManagerEncoderRecord.isReady && mainRender.isReady() && !limitFps) {\n"
+        "      val w = if (muteVideo) 0 else encoderRecordWidth\n"
+        "      val h = if (muteVideo) 0 else encoderRecordHeight\n"
+        "      if (surfaceManagerEncoderRecord.makeCurrent()) {\n"
+        "        mainRender.drawScreenEncoder(w, h, orientation, streamOrientation,\n"
+        "          isStreamVerticalFlip, isStreamHorizontalFlip, streamViewPort)\n"
+        "        surfaceManagerEncoderRecord.setPresentationTime(encoderPresentationTimeNanos!!)\n"
+        "        surfaceManagerEncoderRecord.swapBuffer()\n      }\n    }",
+    )
+    patch(
+        gl,
+        "  override fun forceFpsLimit(fps: Int) {\n    fpsLimiter.setFPS(fps)\n  }",
+        "  override fun forceFpsLimit(fps: Int) {\n    fpsLimiter.setFPS(fps)\n"
+        "    if (fps > 0) nominalFrameDurationNanos = (1_000_000_000L / fps).coerceAtLeast(1L)\n  }",
+    )
+
+    # Also normalize the MediaCodec output PTS (with a per-encoder timeline) and provide
+    # bounded output PTS/keyframe-flag diagnostics during the 180 frames after a loop.
+    video_encoder = VENDOR / "re-encoder/src/main/java/com/pedro/encoder/video/VideoEncoder.java"
+    patch(video_encoder, "import com.pedro.common.TimeUtils;\n", "import com.pedro.common.MonotonicTimestampNormalizer;\nimport com.pedro.common.TimeUtils;\n")
+    patch(video_encoder, "import java.util.List;\n", "import java.util.List;\nimport java.util.concurrent.atomic.AtomicInteger;\n")
+    patch(
+        video_encoder,
+        "  private int iFrameInterval = 2;\n  private long firstTimestamp = 0;",
+        "  private int iFrameInterval = 2;\n  private long firstTimestamp = 0;\n"
+        "  private final MonotonicTimestampNormalizer timestampNormalizer = new MonotonicTimestampNormalizer();\n"
+        "  private final AtomicInteger loopTimestampDiagnosticsRemaining = new AtomicInteger(0);\n"
+        "  private volatile String loopTimestampDiagnosticPath = \"video\";",
+    )
+    patch(
+        video_encoder,
+        "  public VideoEncoder(GetVideoData getVideoData) {\n"
+        "    this.getVideoData = getVideoData;\n"
+        "    typeError = CodecUtil.CodecTypeError.VIDEO_CODEC;\n"
+        "    type = CodecUtil.H264_MIME;\n"
+        "    TAG = \"VideoEncoder\";\n  }",
+        "  public VideoEncoder(GetVideoData getVideoData) {\n"
+        "    this.getVideoData = getVideoData;\n"
+        "    typeError = CodecUtil.CodecTypeError.VIDEO_CODEC;\n"
+        "    type = CodecUtil.H264_MIME;\n"
+        "    TAG = \"VideoEncoder\";\n  }\n\n"
+        "  public void startLoopTimestampDiagnostics(String path, int frameCount) {\n"
+        "    loopTimestampDiagnosticPath = path;\n"
+        "    loopTimestampDiagnosticsRemaining.set(Math.max(0, frameCount));\n  }",
+    )
+    patch(
+        video_encoder,
+        "  public void start(boolean resetTs) {\n    if (resetTs) firstTimestamp = 0;\n    forceKey = false;",
+        "  public void start(boolean resetTs) {\n    if (resetTs) {\n"
+        "      firstTimestamp = 0;\n      timestampNormalizer.reset();\n    }\n    forceKey = false;",
+    )
+    patch(
+        video_encoder,
+        "  @Override\n  public void formatChanged(@NonNull MediaCodec mediaCodec, @NonNull MediaFormat mediaFormat) {\n"
+        "    getVideoData.onVideoFormat(mediaFormat);\n    spsPpsSetted = sendSPSandPPS(mediaFormat);\n  }",
+        "  @Override\n  public void formatChanged(@NonNull MediaCodec mediaCodec, @NonNull MediaFormat mediaFormat) {\n"
+        "    getVideoData.onVideoFormat(mediaFormat);\n    spsPpsSetted = sendSPSandPPS(mediaFormat);\n  }\n\n"
+        "  private void normalizeOutputTimestamp(MediaCodec.BufferInfo info) {\n"
+        "    if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) return;\n"
+        "    long sourceTimestampNanos = info.presentationTimeUs * 1_000L;\n"
+        "    long frameDurationNanos = Math.max(1L, 1_000_000_000L / Math.max(1, fps));\n"
+        "    info.presentationTimeUs = timestampNormalizer.normalize(sourceTimestampNanos, frameDurationNanos) / 1_000L;\n"
+        "    int diagnosticsRemaining = loopTimestampDiagnosticsRemaining.getAndUpdate(remaining ->\n"
+        "        remaining > 0 ? remaining - 1 : 0);\n"
+        "    if (diagnosticsRemaining > 0) {\n"
+        "      boolean keyframe = (info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;\n"
+        "      Log.i(TAG, \"loop-pts encoded path=\" + loopTimestampDiagnosticPath + \" remaining=\" + diagnosticsRemaining +\n"
+        "          \" ptsUs=\" + info.presentationTimeUs + \" flags=\" + info.flags + \" keyframe=\" + keyframe +\n"
+        "          \" size=\" + info.size);\n    }\n  }",
+    )
+    patch(
+        video_encoder,
+        "    } else {\n      if (firstTimestamp == 0) firstTimestamp = bufferInfo.presentationTimeUs;\n"
+        "      bufferInfo.presentationTimeUs -= firstTimestamp;\n    }\n  }\n\n  @Override\n  protected void sendBuffer",
+        "    } else {\n      if (firstTimestamp == 0) firstTimestamp = bufferInfo.presentationTimeUs;\n"
+        "      bufferInfo.presentationTimeUs -= firstTimestamp;\n    }\n"
+        "    normalizeOutputTimestamp(bufferInfo);\n  }\n\n  @Override\n  protected void sendBuffer",
+    )
+
+    # Loop diagnostics and explicit keyframe recovery are exposed through StreamBase.
+    patch(
+        stream_base,
+        "  fun requestKeyframe() {\n"
+        "    if (videoEncoder.isRunning) {\n"
+        "      videoEncoder.requestKeyframe()\n    }\n"
+        "    if (videoEncoderRecord.isRunning) {\n"
+        "      videoEncoderRecord.requestKeyframe()\n    }\n"
+        "  }",
+        "  fun requestKeyframe() {\n"
+        "    if (videoEncoder.isRunning) {\n"
+        "      videoEncoder.requestKeyframe()\n    }\n"
+        "    if (videoEncoderRecord.isRunning) {\n"
+        "      videoEncoderRecord.requestKeyframe()\n    }\n"
+        "  }\n\n"
+        "  /** Enable bounded, non-sensitive timestamp/keyframe logs around a detected source loop. */\n"
+        "  fun startLoopTimestampDiagnostics(frameCount: Int) {\n"
+        "    glInterface.startLoopTimestampDiagnostics(frameCount)\n"
+        "    videoEncoder.startLoopTimestampDiagnostics(\"stream\", frameCount)\n"
+        "    videoEncoderRecord.startLoopTimestampDiagnostics(\"record\", frameCount)\n"
+        "  }",
+    )
+
     total = sum(1 for _ in (VENDOR / "re-common").rglob("*") if _.is_file())
     print(f"Vendored RootEncoder from {src}")
     for module, target in MODULES.items():

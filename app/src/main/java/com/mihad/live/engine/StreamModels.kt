@@ -95,7 +95,7 @@ data class StreamRequest(
         val size = canvas()
         val recommended = if (quality == VideoQuality.P1080) 5_000_000 else 2_800_000
         return when (bitrateMode) {
-            BitrateMode.AUTO -> if (quality == VideoQuality.P1080) 4_000_000 else 2_200_000
+            BitrateMode.AUTO -> if (quality == VideoQuality.P1080) 4_000_000 else 3_000_000
             BitrateMode.RECOMMENDED -> recommended
             BitrateMode.CUSTOM -> (customBitrateBps ?: recommended).coerceIn(
                 1_000_000,

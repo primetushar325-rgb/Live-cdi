@@ -210,6 +210,13 @@ abstract class StreamBase(
     }
   }
 
+  /** Enable bounded, non-sensitive timestamp/keyframe logs around a detected source loop. */
+  fun startLoopTimestampDiagnostics(frameCount: Int) {
+    glInterface.startLoopTimestampDiagnostics(frameCount)
+    videoEncoder.startLoopTimestampDiagnostics("stream", frameCount)
+    videoEncoderRecord.startLoopTimestampDiagnostics("record", frameCount)
+  }
+
   /**
    * Set video bitrate in bits per second while streaming.
    *
