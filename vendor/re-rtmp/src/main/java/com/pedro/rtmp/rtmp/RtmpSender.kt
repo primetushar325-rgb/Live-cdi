@@ -16,6 +16,7 @@
 
 package com.pedro.rtmp.rtmp
 
+import android.os.SystemClock
 import android.util.Log
 import com.pedro.common.AudioCodec
 import com.pedro.common.ConnectChecker
@@ -52,14 +53,20 @@ class RtmpSender(
   private var videoPacket: BasePacket = H264Packet()
   var socket: RtmpSocket? = null
 
-  // These counters advance only after the corresponding FLV packet's socket flush succeeds.
-  // Unlike BaseSender's per-connection counters, they remain cumulative across RTMP retries.
+  // Packet/config counters advance only after the corresponding FLV packet's socket flush succeeds.
+  // Byte totals are RootEncoder RTMP message-length values (not TCP/TLS wire-byte counters).
+  // Unlike BaseSender's per-connection counters, these totals remain cumulative across RTMP retries.
   private val successfulVideoPackets = AtomicLong(0)
   private val successfulAudioPackets = AtomicLong(0)
   private val successfulVideoConfigs = AtomicLong(0)
   private val successfulAudioConfigs = AtomicLong(0)
   private val successfulVideoKeyframes = AtomicLong(0)
+  private val successfulVideoBytes = AtomicLong(0)
+  private val successfulAudioBytes = AtomicLong(0)
   private val successfulMediaBytes = AtomicLong(0)
+  private val lastVideoPacketAtMs = AtomicLong(0)
+  private val lastVideoKeyframeAtMs = AtomicLong(0)
+  private val lastAudioPacketAtMs = AtomicLong(0)
   private val videoConfigReported = AtomicBoolean(false)
   private val audioConfigReported = AtomicBoolean(false)
   private val videoPacketReported = AtomicBoolean(false)
@@ -71,6 +78,11 @@ class RtmpSender(
   fun getSuccessfulVideoConfigs(): Long = successfulVideoConfigs.get()
   fun getSuccessfulAudioConfigs(): Long = successfulAudioConfigs.get()
   fun getSuccessfulVideoKeyframes(): Long = successfulVideoKeyframes.get()
+  fun getSuccessfulVideoBytes(): Long = successfulVideoBytes.get()
+  fun getSuccessfulAudioBytes(): Long = successfulAudioBytes.get()
+  fun getLastVideoPacketAtMs(): Long = lastVideoPacketAtMs.get()
+  fun getLastVideoKeyframeAtMs(): Long = lastVideoKeyframeAtMs.get()
+  fun getLastAudioPacketAtMs(): Long = lastAudioPacketAtMs.get()
   fun getSuccessfulMediaBytes(): Long = successfulMediaBytes.get()
 
   override fun setVideoInfo(sps: ByteBuffer, pps: ByteBuffer?, vps: ByteBuffer?) {
@@ -115,28 +127,33 @@ class RtmpSender(
           bytesSendPerSecond.addAndGet(size)
           successfulMediaBytes.addAndGet(size)
           if (flvPacket.type == FlvType.VIDEO) {
+            successfulVideoBytes.addAndGet(size)
             val packetType = flvPacket.buffer.getOrNull(1)
             if (packetType == H264Packet.Type.SEQUENCE.value) {
               successfulVideoConfigs.incrementAndGet()
               if (videoConfigReported.compareAndSet(false, true)) reportStage("H264_CONFIG_SENT")
             } else if (packetType == H264Packet.Type.NALU.value) {
               successfulVideoPackets.incrementAndGet()
+              lastVideoPacketAtMs.set(SystemClock.elapsedRealtime())
               videoFramesSent.incrementAndGet()
               if (videoPacketReported.compareAndSet(false, true)) reportStage("VIDEO_PACKET_SENT")
               val isKeyframe = ((flvPacket.buffer[0].toInt() and 0xF0) shr 4) == 1
               if (isKeyframe) {
                 successfulVideoKeyframes.incrementAndGet()
+                lastVideoKeyframeAtMs.set(SystemClock.elapsedRealtime())
                 if (keyframeReported.compareAndSet(false, true)) reportStage("VIDEO_KEYFRAME_SENT")
               }
             }
             if (isEnableLogs) Log.i(TAG, "wrote Video packet, size $size")
           } else {
+            successfulAudioBytes.addAndGet(size)
             val packetType = flvPacket.buffer.getOrNull(1)
             if (packetType == AacPacket.Type.SEQUENCE.mark) {
               successfulAudioConfigs.incrementAndGet()
               if (audioConfigReported.compareAndSet(false, true)) reportStage("AAC_CONFIG_SENT")
             } else if (packetType == AacPacket.Type.RAW.mark) {
               successfulAudioPackets.incrementAndGet()
+              lastAudioPacketAtMs.set(SystemClock.elapsedRealtime())
               audioFramesSent.incrementAndGet()
               if (audioPacketReported.compareAndSet(false, true)) reportStage("AUDIO_PACKET_SENT")
             }

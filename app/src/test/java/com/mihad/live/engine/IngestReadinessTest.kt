@@ -8,36 +8,46 @@ import org.junit.Test
 class IngestReadinessTest {
 
     @Test
-    fun `handshake failure is distinct from publish failure`() {
+    fun `handshake failure is distinct from RTMP publish failure`() {
         assertEquals(
-            "INGEST: HANDSHAKE FAILED",
+            "RTMP HANDSHAKE FAILED",
             IngestReadiness.assess(IngestEvidence(handshakeFailed = true, publishFailed = true)).status
         )
         assertEquals(
-            "INGEST: PUBLISH FAILED",
+            "RTMP PUBLISH FAILED",
             IngestReadiness.assess(IngestEvidence(publishFailed = true)).status
         )
     }
 
     @Test
-    fun `accepted publish with no flushed media is not connected`() {
-        val result = IngestReadiness.assess(IngestEvidence(publishAccepted = true))
-        assertEquals("INGEST: CONNECTED — MEDIA NOT FLOWING", result.status)
+    fun `connect and publish request do not mean publish was accepted`() {
+        val result = IngestReadiness.assess(
+            IngestEvidence(connectAccepted = true, publishSent = true)
+        )
+        assertEquals("RTMP CONNECTED — PUBLISH RESPONSE PENDING", result.status)
         assertFalse(result.mediaFlowing)
-        assertFalse(result.connected)
+        assertFalse(result.localMediaReady)
     }
 
     @Test
-    fun `codec configuration alone does not establish media flow`() {
+    fun `accepted publish with no flushed video is not media flowing`() {
+        val result = IngestReadiness.assess(IngestEvidence(publishAccepted = true))
+        assertEquals("RTMP PUBLISHING — NO VIDEO PACKETS", result.status)
+        assertFalse(result.mediaFlowing)
+        assertFalse(result.localMediaReady)
+    }
+
+    @Test
+    fun `codec configuration alone does not establish raw media flow`() {
         val result = IngestReadiness.assess(
             IngestEvidence(publishAccepted = true, videoCodecConfigs = 1)
         )
-        assertEquals("INGEST: CONNECTED — MEDIA NOT FLOWING", result.status)
-        assertFalse(result.connected)
+        assertEquals("RTMP PUBLISHING — NO VIDEO PACKETS", result.status)
+        assertFalse(result.mediaFlowing)
     }
 
     @Test
-    fun `media writes without accepted publish cannot establish ingest`() {
+    fun `media writes without accepted publish cannot establish media flow`() {
         val result = IngestReadiness.assess(
             IngestEvidence(
                 videoPackets = 1,
@@ -45,8 +55,19 @@ class IngestReadinessTest {
                 videoCodecConfigs = 1
             )
         )
-        assertEquals("INGEST: NOT CONNECTED", result.status)
-        assertFalse(result.connected)
+        assertEquals("RTMP NOT CONNECTED", result.status)
+        assertFalse(result.mediaFlowing)
+        assertFalse(result.localMediaReady)
+    }
+
+    @Test
+    fun `audio-only writes do not mask missing video packets`() {
+        val result = IngestReadiness.assess(
+            IngestEvidence(publishAccepted = true, audioExpected = true, audioPackets = 12)
+        )
+        assertEquals("RTMP PUBLISHING — AUDIO WRITES, NO VIDEO PACKETS", result.status)
+        assertFalse(result.mediaFlowing)
+        assertFalse(result.localMediaReady)
     }
 
     @Test
@@ -61,13 +82,13 @@ class IngestReadinessTest {
                 audioCodecConfigs = 1
             )
         )
-        assertEquals("INGEST: MEDIA FLOWING — AUDIO NOT FLOWING", result.status)
+        assertEquals("MEDIA FLOWING — AUDIO NOT FLOWING", result.status)
         assertTrue(result.mediaFlowing)
-        assertFalse(result.connected)
+        assertFalse(result.localMediaReady)
     }
 
     @Test
-    fun `connected requires publish acceptance and flushed codec and media packets`() {
+    fun `complete local RTMP media evidence still does not claim YouTube receipt`() {
         val result = IngestReadiness.assess(
             IngestEvidence(
                 publishAccepted = true,
@@ -79,7 +100,10 @@ class IngestReadinessTest {
                 audioCodecConfigs = 1
             )
         )
-        assertEquals("INGEST: CONNECTED", result.status)
-        assertTrue(result.connected)
+        assertEquals("RTMP MEDIA FLOWING — YOUTUBE RECEIPT NOT VERIFIED", result.status)
+        assertTrue(result.mediaFlowing)
+        assertTrue(result.localMediaReady)
+        assertFalse(result.status.contains("YOUTUBE INGEST DETECTED"))
+        assertFalse(result.status.contains("LIVE"))
     }
 }

@@ -42,6 +42,11 @@ class RtmpStreamClient(
   fun getSentVideoKeyframes(): Long = rtmpClient.sentVideoKeyframes
   fun getSentVideoCodecConfigs(): Long = rtmpClient.sentVideoCodecConfigs
   fun getSentAudioCodecConfigs(): Long = rtmpClient.sentAudioCodecConfigs
+  fun getSentVideoBytes(): Long = rtmpClient.sentVideoBytes
+  fun getSentAudioBytes(): Long = rtmpClient.sentAudioBytes
+  fun getLastVideoPacketAtMs(): Long = rtmpClient.lastVideoPacketAtMs
+  fun getLastVideoKeyframeAtMs(): Long = rtmpClient.lastVideoKeyframeAtMs
+  fun getLastAudioPacketAtMs(): Long = rtmpClient.lastAudioPacketAtMs
   fun getSuccessfulMediaBytes(): Long = rtmpClient.successfulMediaBytes
 
   /**

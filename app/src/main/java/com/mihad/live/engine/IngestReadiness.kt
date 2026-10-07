@@ -18,41 +18,48 @@ data class IngestEvidence(
 
 data class IngestAssessment(
     val status: String,
+    /** A real raw video FLV packet was successfully flushed in this accepted publish attempt. */
     val mediaFlowing: Boolean,
-    val connected: Boolean
+    /** Local packet evidence is complete; this is not proof of YouTube receipt. */
+    val localMediaReady: Boolean
 )
 
 /**
- * Never infers ingest from preview, encoder output, elapsed time or an open socket. A connected
- * result requires RTMP publish acceptance plus successful H.264 config, keyframe and media writes;
- * AAC config and raw audio writes are also required when the selected source has audio.
+ * This reducer never claims YouTube ingest. It only reports RTMP protocol responses and local
+ * successful packet writes. YouTube receipt and broadcast-LIVE state require external evidence.
  */
 object IngestReadiness {
     fun assess(evidence: IngestEvidence): IngestAssessment {
-        if (evidence.handshakeFailed) return IngestAssessment("INGEST: HANDSHAKE FAILED", false, false)
-        if (evidence.connectFailed) return IngestAssessment("INGEST: CONNECT FAILED", false, false)
-        if (evidence.publishFailed) return IngestAssessment("INGEST: PUBLISH FAILED", false, false)
+        if (evidence.handshakeFailed) return IngestAssessment("RTMP HANDSHAKE FAILED", false, false)
+        if (evidence.connectFailed) return IngestAssessment("RTMP CONNECT FAILED", false, false)
+        if (evidence.publishFailed) return IngestAssessment("RTMP PUBLISH FAILED", false, false)
         if (!evidence.publishAccepted) {
-            val status = if (evidence.publishSent || evidence.connectAccepted) "INGEST: PUBLISHING" else "INGEST: NOT CONNECTED"
+            val status = when {
+                evidence.publishSent -> "RTMP CONNECTED — PUBLISH RESPONSE PENDING"
+                evidence.connectAccepted -> "RTMP CONNECTED — PUBLISH NOT ACCEPTED"
+                else -> "RTMP NOT CONNECTED"
+            }
             return IngestAssessment(status, false, false)
         }
 
-        val mediaFlowing = evidence.videoPackets > 0 || evidence.audioPackets > 0
-        if (!mediaFlowing) {
-            return IngestAssessment("INGEST: CONNECTED — MEDIA NOT FLOWING", false, false)
+        val videoFlowing = evidence.videoPackets > 0
+        if (!videoFlowing) {
+            val status = if (evidence.audioPackets > 0) {
+                "RTMP PUBLISHING — AUDIO WRITES, NO VIDEO PACKETS"
+            } else {
+                "RTMP PUBLISHING — NO VIDEO PACKETS"
+            }
+            return IngestAssessment(status, false, false)
         }
         if (evidence.videoCodecConfigs == 0L) {
-            return IngestAssessment("INGEST: MEDIA FLOWING — WAITING FOR H.264 CONFIG", true, false)
-        }
-        if (evidence.videoPackets == 0L) {
-            return IngestAssessment("INGEST: MEDIA FLOWING — WAITING FOR VIDEO", true, false)
+            return IngestAssessment("MEDIA FLOWING — WAITING FOR AVC CONFIG", true, false)
         }
         if (evidence.videoKeyframes == 0L) {
-            return IngestAssessment("INGEST: MEDIA FLOWING — WAITING FOR KEYFRAME", true, false)
+            return IngestAssessment("MEDIA FLOWING — WAITING FOR KEYFRAME", true, false)
         }
         if (evidence.audioExpected && (evidence.audioCodecConfigs == 0L || evidence.audioPackets == 0L)) {
-            return IngestAssessment("INGEST: MEDIA FLOWING — AUDIO NOT FLOWING", true, false)
+            return IngestAssessment("MEDIA FLOWING — AUDIO NOT FLOWING", true, false)
         }
-        return IngestAssessment("INGEST: CONNECTED", true, true)
+        return IngestAssessment("RTMP MEDIA FLOWING — YOUTUBE RECEIPT NOT VERIFIED", true, true)
     }
 }

@@ -122,6 +122,16 @@ class RtmpClient(private val connectChecker: ConnectChecker) {
     get() = rtmpSender.getSuccessfulVideoConfigs()
   val sentAudioCodecConfigs: Long
     get() = rtmpSender.getSuccessfulAudioConfigs()
+  val sentVideoBytes: Long
+    get() = rtmpSender.getSuccessfulVideoBytes()
+  val sentAudioBytes: Long
+    get() = rtmpSender.getSuccessfulAudioBytes()
+  val lastVideoPacketAtMs: Long
+    get() = rtmpSender.getLastVideoPacketAtMs()
+  val lastVideoKeyframeAtMs: Long
+    get() = rtmpSender.getLastVideoKeyframeAtMs()
+  val lastAudioPacketAtMs: Long
+    get() = rtmpSender.getLastAudioPacketAtMs()
   var socketType = SocketType.KTOR
   var socketTimeout = StreamSocket.DEFAULT_TIMEOUT
   var shouldFailOnRead = false

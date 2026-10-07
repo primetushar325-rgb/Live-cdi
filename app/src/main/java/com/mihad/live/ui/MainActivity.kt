@@ -1081,7 +1081,7 @@ class MainActivity : AppCompatActivity() {
         val statusCard = card(R.color.ml_cyan_dim, 22)
         val statusColumn = vertical().apply { setPadding(dp(17), dp(17), dp(17), dp(17)) }
         val statusRow = horizontal()
-        val status = label("● CONNECTING TO YOUTUBE", 16f, R.color.ml_cyan, bold = true)
+        val status = label("● CONNECTING", 16f, R.color.ml_cyan, bold = true)
         dashboardStatus = status
         statusRow.addView(status, LinearLayout.LayoutParams(0, dp(30), 1f))
         dashboardDuration = label("00:00:00", 17f, R.color.ml_text, bold = true)
@@ -1097,7 +1097,7 @@ class MainActivity : AppCompatActivity() {
         val stateColumn = vertical().apply { setPadding(dp(15), dp(12), dp(15), dp(12)) }
         dashboardEngineState = stateRow(stateColumn, "APP ENGINE", "PREPARING")
         dashboardRtmpState = stateRow(stateColumn, "RTMP CONNECTION", "CONNECTING")
-        dashboardIngestState = stateRow(stateColumn, "RTMP INGEST", "INGEST: NOT CONNECTED")
+        dashboardIngestState = stateRow(stateColumn, "RTMP PUBLISH / MEDIA", "RTMP NOT CONNECTED")
         stateCard.addView(stateColumn)
         body.addView(stateCard)
         body.addSpace(12)
@@ -1165,7 +1165,7 @@ class MainActivity : AppCompatActivity() {
         }
         body.addView(studio, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)))
         body.addSpace(8)
-        body.addView(label("INGEST CONNECTED means the RTMP server accepted publishing and required media packets were written. Confirm actual receipt and LIVE status in YouTube Control Room.", 10f, R.color.ml_text_muted))
+        body.addView(label("Packet counters prove only successful local RTMP socket writes. YouTube receipt and broadcast LIVE status are not available from RTMP callbacks; verify the incoming preview and broadcast state in Control Room.", 10f, R.color.ml_text_muted))
         body.addSpace(18)
         body.addView(button("STOP LIVE", primary = true).apply {
             setBackgroundTintList(android.content.res.ColorStateList.valueOf(colorResource(R.color.ml_live)))
@@ -1225,18 +1225,19 @@ class MainActivity : AppCompatActivity() {
         val statusColor = when (snapshot.state) {
             StreamState.ERROR -> R.color.ml_error
             StreamState.RECONNECTING -> R.color.ml_warn
-            StreamState.INGEST_CONNECTED, StreamState.MEDIA_FLOWING, StreamState.PUBLISHING -> R.color.ml_cyan
+            StreamState.YOUTUBE_INGEST_DETECTED, StreamState.MEDIA_FLOWING, StreamState.PUBLISHING -> R.color.ml_cyan
             StreamState.LIVE -> R.color.ml_live
             StreamState.STOPPED -> R.color.ml_text_secondary
             else -> R.color.ml_cyan
         }
         dashboardStatus?.apply {
             text = when (snapshot.state) {
-                StreamState.CONNECTING_TO_YOUTUBE -> "● CONNECTING TO YOUTUBE"
+                StreamState.CONNECTING -> "● CONNECTING"
                 StreamState.RTMP_HANDSHAKE -> "● RTMP HANDSHAKE"
-                StreamState.PUBLISHING -> "● PUBLISHING"
+                StreamState.RTMP_CONNECTED -> "● RTMP CONNECTED"
+                StreamState.PUBLISHING -> "● RTMP PUBLISHING"
                 StreamState.MEDIA_FLOWING -> "● MEDIA FLOWING"
-                StreamState.INGEST_CONNECTED -> "● INGEST CONNECTED"
+                StreamState.YOUTUBE_INGEST_DETECTED -> "● YOUTUBE INGEST DETECTED"
                 StreamState.LIVE -> "● LIVE"
                 StreamState.RECONNECTING -> "● RECONNECTING"
                 StreamState.ERROR -> "● ERROR"
@@ -1248,16 +1249,13 @@ class MainActivity : AppCompatActivity() {
         }
         dashboardDuration?.text = formatDuration(snapshot.elapsedMs)
         dashboardSubstatus?.text = when (snapshot.state) {
-            StreamState.CONNECTING_TO_YOUTUBE -> if (snapshot.handshakeStatus == "SUCCEEDED") {
-                "RTMP handshake complete; waiting for server connect and publish responses."
-            } else "Opening the entered RTMP or RTMPS server endpoint."
-            StreamState.RTMP_HANDSHAKE -> "Socket connected; exchanging RTMP handshake packets."
-            StreamState.PUBLISHING -> if (snapshot.publishStatus == "ACCEPTED") {
-                "RTMP publish accepted. Waiting for successful codec configuration and media packet writes."
-            } else "Waiting for the RTMP server to accept the publish request."
-            StreamState.MEDIA_FLOWING -> "Media packet writes are confirmed. Checking keyframe and required audio evidence."
-            StreamState.INGEST_CONNECTED -> "RTMP publish and required encoded media writes are confirmed. Verify receipt in Control Room."
-            StreamState.LIVE -> "LIVE status requires official YouTube Control Room confirmation."
+            StreamState.CONNECTING -> "Opening the exact entered RTMP or RTMPS endpoint. This is not a connected or live state."
+            StreamState.RTMP_HANDSHAKE -> "TCP/TLS socket opened; exchanging the RTMP handshake."
+            StreamState.RTMP_CONNECTED -> "RTMP handshake and server connect response succeeded. Waiting for NetStream.Publish.Start."
+            StreamState.PUBLISHING -> "The RTMP server returned NetStream.Publish.Start. Checking actual H.264/AAC packet writes."
+            StreamState.MEDIA_FLOWING -> "Raw video packet writes are confirmed locally. Local socket writes do not prove YouTube receipt."
+            StreamState.YOUTUBE_INGEST_DETECTED -> "Official YouTube ingest evidence received."
+            StreamState.LIVE -> "Official YouTube broadcast-LIVE evidence received."
             StreamState.RECONNECTING -> "Retrying the RTMP transport; encoder and session timer are retained."
             StreamState.ERROR -> snapshot.errorMessage ?: "Stream needs attention."
             StreamState.STOPPED -> "Stream stopped. The dashboard reports measured values only."
@@ -1267,7 +1265,7 @@ class MainActivity : AppCompatActivity() {
         dashboardRtmpState?.text = snapshot.rtmpStatus
         dashboardIngestState?.apply {
             text = snapshot.ingestStatus
-            val warning = listOf("FAILED", "NOT FLOWING", "NOT CONNECTED", "WAITING", "RECONNECTING")
+            val warning = listOf("FAILED", "NOT FLOWING", "NO VIDEO", "AUDIO NOT", "NOT VERIFIED", "NOT CONNECTED", "WAITING", "RECONNECTING")
                 .any { snapshot.ingestStatus.contains(it, ignoreCase = true) }
             setTextColor(colorResource(if (warning) R.color.ml_warn else R.color.ml_text_secondary))
         }
@@ -1305,7 +1303,12 @@ class MainActivity : AppCompatActivity() {
         val encodedAudio = snapshot.encodedAudioFrames?.toString() ?: "N/A"
         val videoPackets = snapshot.sentVideoPackets?.toString() ?: "N/A"
         val audioPackets = snapshot.sentAudioPackets?.toString() ?: "N/A"
+        val videoBytes = snapshot.sentVideoBytes?.toString() ?: "N/A"
+        val audioBytes = snapshot.sentAudioBytes?.toString() ?: "N/A"
         val keyframes = snapshot.sentKeyframes?.toString() ?: "N/A"
+        val lastVideoPacket = snapshot.lastVideoPacketAgoMs?.let { "$it ms ago" } ?: "NEVER"
+        val lastKeyframe = snapshot.lastVideoKeyframeAgoMs?.let { "$it ms ago" } ?: "NEVER"
+        val lastAudioPacket = snapshot.lastAudioPacketAgoMs?.let { "$it ms ago" } ?: "NEVER"
         val bytes = snapshot.sentBytes?.let(::formatBytes) ?: "N/A"
         return listOf(
             "Server URL validity: $serverValidity",
@@ -1320,12 +1323,21 @@ class MainActivity : AppCompatActivity() {
             "RTMP publish:        ${snapshot.publishStatus}",
             "H.264 config writes: ${if (snapshot.h264ConfigSent) "SENT" else "NOT SENT"}",
             "AAC config writes:   ${if (snapshot.audioEncoderStatus == "NOT USED") "NOT REQUIRED" else if (snapshot.aacConfigSent) "SENT" else "NOT SENT"}",
-            "Video packets:       $videoPackets",
-            "Audio packets:       $audioPackets",
-            "Video keyframes:     $keyframes",
-            "FLV/RTMP bytes:      $bytes",
-            "Ingest state:        ${snapshot.ingestStatus}",
-            "Counts require a successful sender flush; RTMP writes do not prove Control Room receipt."
+            "Video Packets Sent:  $videoPackets",
+            "Audio Packets Sent:  $audioPackets",
+            "Video RTMP Msg B:    $videoBytes",
+            "Audio RTMP Msg B:    $audioBytes",
+            "Keyframes Sent:      $keyframes",
+            "Last Video Packet:   $lastVideoPacket",
+            "Last Keyframe:       $lastKeyframe",
+            "Last Audio Packet:   $lastAudioPacket",
+            "Total FLV/RTMP bytes: $bytes",
+            "RTMP publish/media:  ${snapshot.ingestStatus}",
+            "Pipeline failure:    ${snapshot.pipelineFailureStage ?: "NONE"}",
+            "YouTube receipt:     NOT VERIFIED · CHECK CONTROL ROOM",
+            "Broadcast LIVE:      NOT VERIFIED",
+            "RTMP message bytes are RootEncoder size totals after flush, not TCP/TLS wire-byte counts.",
+            "Local RTMP counters never verify YouTube receipt or broadcast LIVE."
         ).joinToString("\n")
     }
 
@@ -1349,7 +1361,7 @@ class MainActivity : AppCompatActivity() {
         body.addSpace(10)
         body.addView(infoCard("Gallery access", "Android's system document picker grants access only to the video you choose. Mihad Live does not request broad photo/video library access."))
         body.addSpace(10)
-        body.addView(infoCard("Live verification", "The dashboard shows INGEST CONNECTED only after server publish acceptance and successful codec/media packet writes. YouTube Control Room must still confirm receipt and the actual LIVE status."))
+        body.addView(infoCard("Live verification", "RTMP handshake, connect, publish acceptance, codec configuration and local packet writes are reported separately. RTMP cannot prove YouTube receipt or broadcast LIVE; verify incoming video in YouTube Control Room."))
         body.addSpace(10)
         body.addView(infoCard("Background streaming", "The foreground service owns the decoder, compositor, encoders and RTMP transport. A persistent notification includes a Stop Live action."))
         body.addSpace(20)

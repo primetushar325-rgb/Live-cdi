@@ -245,6 +245,7 @@ def main() -> None:
 
     # Count FLV packet writes only after CommandsManager has flushed the socket.
     rtmp_sender = VENDOR / "re-rtmp/src/main/java/com/pedro/rtmp/rtmp/RtmpSender.kt"
+    patch(rtmp_sender, "import android.util.Log\n", "import android.os.SystemClock\nimport android.util.Log\n")
     patch(rtmp_sender, "import com.pedro.common.validMessage\n", "")
     patch(
         rtmp_sender,
@@ -263,14 +264,20 @@ def main() -> None:
         rtmp_sender,
         "  var socket: RtmpSocket? = null\n",
         "  var socket: RtmpSocket? = null\n\n"
-        "  // These counters advance only after the corresponding FLV packet's socket flush succeeds.\n"
-        "  // Unlike BaseSender's per-connection counters, they remain cumulative across RTMP retries.\n"
+        "  // Packet/config counters advance only after the corresponding FLV packet's socket flush succeeds.\n"
+        "  // Byte totals are RootEncoder RTMP message-length values (not TCP/TLS wire-byte counters).\n"
+        "  // Unlike BaseSender's per-connection counters, these totals remain cumulative across RTMP retries.\n"
         "  private val successfulVideoPackets = AtomicLong(0)\n"
         "  private val successfulAudioPackets = AtomicLong(0)\n"
         "  private val successfulVideoConfigs = AtomicLong(0)\n"
         "  private val successfulAudioConfigs = AtomicLong(0)\n"
         "  private val successfulVideoKeyframes = AtomicLong(0)\n"
+        "  private val successfulVideoBytes = AtomicLong(0)\n"
+        "  private val successfulAudioBytes = AtomicLong(0)\n"
         "  private val successfulMediaBytes = AtomicLong(0)\n"
+        "  private val lastVideoPacketAtMs = AtomicLong(0)\n"
+        "  private val lastVideoKeyframeAtMs = AtomicLong(0)\n"
+        "  private val lastAudioPacketAtMs = AtomicLong(0)\n"
         "  private val videoConfigReported = AtomicBoolean(false)\n"
         "  private val audioConfigReported = AtomicBoolean(false)\n"
         "  private val videoPacketReported = AtomicBoolean(false)\n"
@@ -281,6 +288,11 @@ def main() -> None:
         "  fun getSuccessfulVideoConfigs(): Long = successfulVideoConfigs.get()\n"
         "  fun getSuccessfulAudioConfigs(): Long = successfulAudioConfigs.get()\n"
         "  fun getSuccessfulVideoKeyframes(): Long = successfulVideoKeyframes.get()\n"
+        "  fun getSuccessfulVideoBytes(): Long = successfulVideoBytes.get()\n"
+        "  fun getSuccessfulAudioBytes(): Long = successfulAudioBytes.get()\n"
+        "  fun getLastVideoPacketAtMs(): Long = lastVideoPacketAtMs.get()\n"
+        "  fun getLastVideoKeyframeAtMs(): Long = lastVideoKeyframeAtMs.get()\n"
+        "  fun getLastAudioPacketAtMs(): Long = lastAudioPacketAtMs.get()\n"
         "  fun getSuccessfulMediaBytes(): Long = successfulMediaBytes.get()\n",
     )
     patch(
@@ -320,28 +332,33 @@ def main() -> None:
         "          bytesSendPerSecond.addAndGet(size)\n"
         "          successfulMediaBytes.addAndGet(size)\n"
         "          if (flvPacket.type == FlvType.VIDEO) {\n"
+        "            successfulVideoBytes.addAndGet(size)\n"
         "            val packetType = flvPacket.buffer.getOrNull(1)\n"
         "            if (packetType == H264Packet.Type.SEQUENCE.value) {\n"
         "              successfulVideoConfigs.incrementAndGet()\n"
         "              if (videoConfigReported.compareAndSet(false, true)) reportStage(\"H264_CONFIG_SENT\")\n"
         "            } else if (packetType == H264Packet.Type.NALU.value) {\n"
         "              successfulVideoPackets.incrementAndGet()\n"
+        "              lastVideoPacketAtMs.set(SystemClock.elapsedRealtime())\n"
         "              videoFramesSent.incrementAndGet()\n"
         "              if (videoPacketReported.compareAndSet(false, true)) reportStage(\"VIDEO_PACKET_SENT\")\n"
         "              val isKeyframe = ((flvPacket.buffer[0].toInt() and 0xF0) shr 4) == 1\n"
         "              if (isKeyframe) {\n"
         "                successfulVideoKeyframes.incrementAndGet()\n"
+        "                lastVideoKeyframeAtMs.set(SystemClock.elapsedRealtime())\n"
         "                if (keyframeReported.compareAndSet(false, true)) reportStage(\"VIDEO_KEYFRAME_SENT\")\n"
         "              }\n"
         "            }\n"
         "            if (isEnableLogs) Log.i(TAG, \"wrote Video packet, size $size\")\n"
         "          } else {\n"
+        "            successfulAudioBytes.addAndGet(size)\n"
         "            val packetType = flvPacket.buffer.getOrNull(1)\n"
         "            if (packetType == AacPacket.Type.SEQUENCE.mark) {\n"
         "              successfulAudioConfigs.incrementAndGet()\n"
         "              if (audioConfigReported.compareAndSet(false, true)) reportStage(\"AAC_CONFIG_SENT\")\n"
         "            } else if (packetType == AacPacket.Type.RAW.mark) {\n"
         "              successfulAudioPackets.incrementAndGet()\n"
+        "              lastAudioPacketAtMs.set(SystemClock.elapsedRealtime())\n"
         "              audioFramesSent.incrementAndGet()\n"
         "              if (audioPacketReported.compareAndSet(false, true)) reportStage(\"AUDIO_PACKET_SENT\")\n"
         "            }\n"
@@ -385,7 +402,12 @@ def main() -> None:
         "  val sentAudioPackets: Long\n    get() = rtmpSender.getSuccessfulAudioPackets()\n"
         "  val sentVideoKeyframes: Long\n    get() = rtmpSender.getSuccessfulVideoKeyframes()\n"
         "  val sentVideoCodecConfigs: Long\n    get() = rtmpSender.getSuccessfulVideoConfigs()\n"
-        "  val sentAudioCodecConfigs: Long\n    get() = rtmpSender.getSuccessfulAudioConfigs()",
+        "  val sentAudioCodecConfigs: Long\n    get() = rtmpSender.getSuccessfulAudioConfigs()\n"
+        "  val sentVideoBytes: Long\n    get() = rtmpSender.getSuccessfulVideoBytes()\n"
+        "  val sentAudioBytes: Long\n    get() = rtmpSender.getSuccessfulAudioBytes()\n"
+        "  val lastVideoPacketAtMs: Long\n    get() = rtmpSender.getLastVideoPacketAtMs()\n"
+        "  val lastVideoKeyframeAtMs: Long\n    get() = rtmpSender.getLastVideoKeyframeAtMs()\n"
+        "  val lastAudioPacketAtMs: Long\n    get() = rtmpSender.getLastAudioPacketAtMs()",
     )
     patch(
         rtmp_client,
@@ -507,6 +529,11 @@ def main() -> None:
         "  fun getSentVideoKeyframes(): Long = rtmpClient.sentVideoKeyframes\n"
         "  fun getSentVideoCodecConfigs(): Long = rtmpClient.sentVideoCodecConfigs\n"
         "  fun getSentAudioCodecConfigs(): Long = rtmpClient.sentAudioCodecConfigs\n"
+        "  fun getSentVideoBytes(): Long = rtmpClient.sentVideoBytes\n"
+        "  fun getSentAudioBytes(): Long = rtmpClient.sentAudioBytes\n"
+        "  fun getLastVideoPacketAtMs(): Long = rtmpClient.lastVideoPacketAtMs\n"
+        "  fun getLastVideoKeyframeAtMs(): Long = rtmpClient.lastVideoKeyframeAtMs\n"
+        "  fun getLastAudioPacketAtMs(): Long = rtmpClient.lastAudioPacketAtMs\n"
         "  fun getSuccessfulMediaBytes(): Long = rtmpClient.successfulMediaBytes\n",
     )
 

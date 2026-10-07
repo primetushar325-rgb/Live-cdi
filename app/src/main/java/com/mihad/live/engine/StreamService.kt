@@ -93,6 +93,13 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     @Volatile private var attemptKeyframeBaseline = 0L
     @Volatile private var attemptVideoConfigBaseline = 0L
     @Volatile private var attemptAudioConfigBaseline = 0L
+    @Volatile private var attemptSourceVideoBaseline = 0L
+    @Volatile private var attemptSourceAudioBaseline = 0L
+    @Volatile private var attemptEncodedVideoBaseline = 0L
+    @Volatile private var attemptEncodedAudioBaseline = 0L
+    @Volatile private var attemptStartedAtMs = 0L
+    @Volatile private var publishRequestAtMs = 0L
+    @Volatile private var publishAcceptedAtMs = 0L
     @Volatile private var lastVideoProgressMs = 0L
     @Volatile private var lastTransportProgressMs = 0L
     @Volatile private var encodedVideoBitrateBps: Long? = null
@@ -216,7 +223,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                         errorMessage = null,
                         engineStatus = "READY",
                         rtmpStatus = "DISCONNECTED",
-                        ingestStatus = "INGEST: NOT CONNECTED",
+                        ingestStatus = "RTMP NOT CONNECTED",
                         width = null,
                         height = null,
                         targetFps = null
@@ -313,13 +320,14 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 encodedVideoBitrateBps = null
                 encodedAudioBitrateBps = null
                 loopCount = 0
+                publishAcceptedAtMs = 0L
                 isStopping = false
                 acquireWakeLock()
                 updateState(
-                    CONNECTING_TO_YOUTUBE,
+                    CONNECTING,
                     engine = "ENCODER READY",
                     rtmp = "CONNECTING",
-                    ingest = "INGEST: NOT CONNECTED"
+                    ingest = "RTMP NOT CONNECTED"
                 )
                 setSnapshot {
                     it.copy(
@@ -337,7 +345,13 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                         aacConfigSent = false,
                         sentVideoPackets = 0L,
                         sentAudioPackets = 0L,
+                        sentVideoBytes = 0L,
+                        sentAudioBytes = 0L,
+                        lastVideoPacketAgoMs = null,
+                        lastVideoKeyframeAgoMs = null,
+                        lastAudioPacketAgoMs = null,
                         sentKeyframes = 0L,
+                        pipelineFailureStage = null,
                         encodedAudioFrames = stream?.getEncodedAudioFrames() ?: 0L,
                         sourceVideoFrames = stream?.getDecodedSourceVideoFrames() ?: 0L,
                         sourceAudioFrames = if (request.videoAsset.hasAudio) stream?.getDecodedSourceAudioFrames() ?: 0L else null
@@ -368,6 +382,12 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             mutableSnapshot.value.state != RECONNECTING && mutableSnapshot.value.state != ERROR) return
         isStopping = false
         retryPending.set(false)
+        if (sessionStartElapsedMs == null) {
+            sessionStartElapsedMs = SystemClock.elapsedRealtime() - mutableSnapshot.value.elapsedMs
+        }
+        publishAcceptedAtMs = 0L
+        lastTransportProgressMs = SystemClock.elapsedRealtime()
+        acquireWakeLock()
         if (reconnectCount >= MAX_RECONNECTS) reconnectCount = 0
         SafeDiagnostics.event("USER_RETRY_REQUESTED")
         scheduleReconnect("User requested retry", request, forced = true)
@@ -428,7 +448,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                         errorMessage = null,
                         engineStatus = "READY",
                         rtmpStatus = "DISCONNECTED",
-                        ingestStatus = "INGEST: NOT CONNECTED",
+                        ingestStatus = "RTMP NOT CONNECTED",
                         elapsedMs = finalDuration,
                         startedAtElapsedMs = null,
                         width = null,
@@ -459,7 +479,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     }
 
     override fun onConnectionSuccess() {
-        if (isStopping) return
+        if (isStopping || mutableSnapshot.value.state in setOf(ERROR, STOPPING, STOPPED)) return
         // RootEncoder calls this only after NetStream.Publish.Start. Packet-level readiness is
         // evaluated separately from successful writes in the sender.
         SafeDiagnostics.event("RTMP_PUBLISH_ACCEPTED")
@@ -471,7 +491,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     }
 
     override fun onConnectionFailed(reason: String) {
-        if (isStopping) return
+        if (isStopping || mutableSnapshot.value.state in setOf(ERROR, STOPPING, STOPPED)) return
         val diagnostics = mutableSnapshot.value
         when {
             diagnostics.handshakeStatus == "IN PROGRESS" -> onTransportStage("HANDSHAKE_FAILED")
@@ -484,6 +504,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             retryPending.set(false)
             SafeDiagnostics.failure(errorCode(reason))
             fail(errorCode(reason), message)
+            stopTransportAfterTerminalFailure()
             return
         }
         SafeDiagnostics.event("RTMP_CONNECTION_INTERRUPTED")
@@ -492,17 +513,18 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
 
     override fun onDisconnect() {
         if (isStopping) return
-        if (mutableSnapshot.value.state !in setOf(STOPPED, STOPPING, IDLE)) {
+        if (mutableSnapshot.value.state !in setOf(STOPPED, STOPPING, IDLE, ERROR)) {
             scheduleReconnect("RTMP transport disconnected", currentRequest)
         }
     }
 
     override fun onAuthError() {
-        if (isStopping) return
+        if (isStopping || mutableSnapshot.value.state in setOf(ERROR, STOPPING, STOPPED)) return
         onTransportStage("RTMP_CONNECT_FAILED")
         retryPending.set(false)
         SafeDiagnostics.failure("AUTH_REJECTED")
         fail("AUTH_REJECTED", "The RTMP server rejected the stream key. Check the key in YouTube Studio.")
+        stopTransportAfterTerminalFailure()
     }
 
     override fun onAuthSuccess() {
@@ -511,7 +533,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
     }
 
     private fun onTransportStage(stage: String) {
-        if (isStopping) return
+        if (isStopping || mutableSnapshot.value.state in setOf(ERROR, STOPPING, STOPPED)) return
         when (stage) {
             "CONNECTING" -> beginTransportAttempt()
             "ENDPOINT_PARSED" -> SafeDiagnostics.event("RTMP_ENDPOINT_PARSED")
@@ -519,24 +541,15 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             "SOCKET_CONNECTED" -> {
                 SafeDiagnostics.event("RTMP_SOCKET_CONNECTED")
                 setSnapshot { it.copy(handshakeStatus = "IN PROGRESS", rtmpStatus = "HANDSHAKE") }
-                updateState(RTMP_HANDSHAKE, engine = "ENCODING", rtmp = "HANDSHAKE", ingest = "INGEST: NOT CONNECTED")
+                updateState(RTMP_HANDSHAKE, engine = "ENCODING", rtmp = "HANDSHAKE", ingest = "RTMP NOT CONNECTED")
             }
             "SOCKET_CONNECT_FAILED" -> setSnapshot {
-                it.copy(
-                    connectStatus = "FAILED",
-                    rtmpStatus = "SOCKET FAILED",
-                    ingestStatus = "INGEST: CONNECT FAILED"
-                )
+                it.copy(connectStatus = "FAILED", rtmpStatus = "SOCKET FAILED", ingestStatus = "RTMP CONNECT FAILED")
             }
             "HANDSHAKE_COMPLETE" -> {
                 SafeDiagnostics.event("RTMP_HANDSHAKE_COMPLETE")
-                setSnapshot { it.copy(handshakeStatus = "SUCCEEDED", rtmpStatus = "CONNECTING") }
-                updateState(
-                    CONNECTING_TO_YOUTUBE,
-                    engine = "ENCODING",
-                    rtmp = "CONNECTING",
-                    ingest = "INGEST: NOT CONNECTED"
-                )
+                setSnapshot { it.copy(handshakeStatus = "SUCCEEDED", rtmpStatus = "WAITING FOR RTMP CONNECT") }
+                updateState(CONNECTING, engine = "ENCODING", rtmp = "WAITING FOR RTMP CONNECT", ingest = "RTMP NOT CONNECTED")
             }
             "HANDSHAKE_FAILED" -> {
                 SafeDiagnostics.failure("RTMP_HANDSHAKE_FAILED")
@@ -544,14 +557,28 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     it.copy(
                         handshakeStatus = "FAILED",
                         rtmpStatus = "HANDSHAKE FAILED",
-                        ingestStatus = "INGEST: HANDSHAKE FAILED"
+                        ingestStatus = "RTMP HANDSHAKE FAILED"
                     )
                 }
             }
-            "RTMP_CONNECT_SENT" -> setSnapshot { it.copy(connectStatus = "REQUEST SENT", rtmpStatus = "CONNECT REQUEST SENT") }
+            "RTMP_CONNECT_SENT" -> setSnapshot {
+                it.copy(connectStatus = "REQUEST SENT", rtmpStatus = "RTMP CONNECT REQUEST SENT")
+            }
             "RTMP_CONNECT_ACCEPTED" -> {
                 SafeDiagnostics.event("RTMP_CONNECT_ACCEPTED")
-                setSnapshot { it.copy(connectStatus = "ACCEPTED", rtmpStatus = "CONNECTED") }
+                setSnapshot {
+                    it.copy(
+                        connectStatus = "ACCEPTED",
+                        rtmpStatus = "RTMP CONNECTED",
+                        ingestStatus = "RTMP CONNECTED — WAITING FOR PUBLISH"
+                    )
+                }
+                updateState(
+                    RTMP_CONNECTED,
+                    engine = "ENCODING",
+                    rtmp = "RTMP CONNECTED",
+                    ingest = "RTMP CONNECTED — WAITING FOR PUBLISH"
+                )
             }
             "RTMP_CONNECT_FAILED" -> {
                 SafeDiagnostics.failure("RTMP_CONNECT_FAILED")
@@ -559,25 +586,42 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     it.copy(
                         connectStatus = "FAILED",
                         rtmpStatus = "CONNECT FAILED",
-                        ingestStatus = "INGEST: CONNECT FAILED"
+                        ingestStatus = "RTMP CONNECT FAILED"
                     )
                 }
             }
             "PUBLISH_SENT" -> {
                 SafeDiagnostics.event("RTMP_PUBLISH_REQUEST_SENT")
-                setSnapshot { it.copy(publishStatus = "REQUEST SENT", rtmpStatus = "PUBLISHING") }
-                updateState(PUBLISHING, engine = "ENCODING", rtmp = "PUBLISHING", ingest = "INGEST: PUBLISHING")
+                publishRequestAtMs = SystemClock.elapsedRealtime()
+                setSnapshot {
+                    it.copy(
+                        publishStatus = "REQUEST SENT",
+                        rtmpStatus = "PUBLISH REQUEST SENT",
+                        ingestStatus = "RTMP CONNECTED — PUBLISH RESPONSE PENDING"
+                    )
+                }
+                // The publish command being written is only a request. Do not enter PUBLISHING
+                // until the server responds with NetStream.Publish.Start.
             }
             "PUBLISH_ACCEPTED" -> {
                 SafeDiagnostics.event("RTMP_PUBLISH_ACCEPTED")
+                publishAcceptedAtMs = SystemClock.elapsedRealtime()
+                lastTransportProgressMs = publishAcceptedAtMs
+                lastVideoProgressMs = publishAcceptedAtMs
+                lastTransportBytes = (stream?.getStreamClient() as? RtmpStreamClient)?.getSuccessfulMediaBytes() ?: 0L
                 setSnapshot {
                     it.copy(
                         publishStatus = "ACCEPTED",
-                        rtmpStatus = "PUBLISHING",
-                        ingestStatus = "INGEST: CONNECTED — MEDIA NOT FLOWING"
+                        rtmpStatus = "PUBLISH ACCEPTED",
+                        ingestStatus = "RTMP PUBLISHING — WAITING FOR VIDEO"
                     )
                 }
-                updateState(PUBLISHING, engine = "ENCODING", rtmp = "PUBLISHING", ingest = "INGEST: CONNECTED — MEDIA NOT FLOWING")
+                updateState(
+                    PUBLISHING,
+                    engine = "ENCODING",
+                    rtmp = "PUBLISH ACCEPTED",
+                    ingest = "RTMP PUBLISHING — WAITING FOR VIDEO"
+                )
             }
             "PUBLISH_FAILED" -> {
                 SafeDiagnostics.failure("RTMP_PUBLISH_FAILED")
@@ -585,7 +629,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     it.copy(
                         publishStatus = "FAILED",
                         rtmpStatus = "PUBLISH FAILED",
-                        ingestStatus = "INGEST: PUBLISH FAILED"
+                        ingestStatus = "RTMP PUBLISH FAILED"
                     )
                 }
             }
@@ -613,20 +657,28 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         attemptKeyframeBaseline = client?.getSentVideoKeyframes() ?: 0L
         attemptVideoConfigBaseline = client?.getSentVideoCodecConfigs() ?: 0L
         attemptAudioConfigBaseline = client?.getSentAudioCodecConfigs() ?: 0L
+        val active = stream
+        attemptSourceVideoBaseline = active?.getDecodedSourceVideoFrames() ?: 0L
+        attemptSourceAudioBaseline = active?.getDecodedSourceAudioFrames() ?: 0L
+        attemptEncodedVideoBaseline = active?.getEncodedVideoFrames() ?: 0L
+        attemptEncodedAudioBaseline = active?.getEncodedAudioFrames() ?: 0L
+        attemptStartedAtMs = SystemClock.elapsedRealtime()
+        publishRequestAtMs = 0L
+        publishAcceptedAtMs = 0L
         setSnapshot {
             it.copy(
                 handshakeStatus = "NOT STARTED",
                 connectStatus = "NOT STARTED",
                 publishStatus = "NOT STARTED",
-                ingestStatus = "INGEST: NOT CONNECTED",
+                ingestStatus = "RTMP NOT CONNECTED",
                 rtmpStatus = "CONNECTING"
             )
         }
         updateState(
-            CONNECTING_TO_YOUTUBE,
+            CONNECTING,
             engine = "ENCODING",
             rtmp = "CONNECTING",
-            ingest = "INGEST: NOT CONNECTED"
+            ingest = "RTMP NOT CONNECTED"
         )
     }
 
@@ -634,14 +686,25 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         val client = active.getStreamClient() as? RtmpStreamClient ?: return
         val videoPackets = client.getSentVideoPackets()
         val audioPackets = client.getSentAudioPackets()
+        val videoBytes = client.getSentVideoBytes()
+        val audioBytes = client.getSentAudioBytes()
         val keyframes = client.getSentVideoKeyframes()
         val videoConfigs = client.getSentVideoCodecConfigs()
         val audioConfigs = client.getSentAudioCodecConfigs()
+        val now = SystemClock.elapsedRealtime()
+        val lastVideoPacketAt = client.getLastVideoPacketAtMs()
+        val lastVideoKeyframeAt = client.getLastVideoKeyframeAtMs()
+        val lastAudioPacketAt = client.getLastAudioPacketAtMs()
         val assessment = assessIngest(active, request)
         setSnapshot {
             it.copy(
                 sentVideoPackets = videoPackets,
                 sentAudioPackets = audioPackets,
+                sentVideoBytes = videoBytes,
+                sentAudioBytes = audioBytes,
+                lastVideoPacketAgoMs = lastVideoPacketAt.takeIf { at -> at > 0L }?.let { at -> (now - at).coerceAtLeast(0L) },
+                lastVideoKeyframeAgoMs = lastVideoKeyframeAt.takeIf { at -> at > 0L }?.let { at -> (now - at).coerceAtLeast(0L) },
+                lastAudioPacketAgoMs = lastAudioPacketAt.takeIf { at -> at > 0L }?.let { at -> (now - at).coerceAtLeast(0L) },
                 sentKeyframes = keyframes,
                 sentBytes = client.getSuccessfulMediaBytes(),
                 h264ConfigSent = videoConfigs > 0,
@@ -649,9 +712,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 encodedAudioFrames = active.getEncodedAudioFrames(),
                 sourceVideoFrames = active.getDecodedSourceVideoFrames(),
                 sourceAudioFrames = if (request.videoAsset.hasAudio) active.getDecodedSourceAudioFrames() else null,
-                ingestStatus = if (it.state in setOf(PUBLISHING, MEDIA_FLOWING, INGEST_CONNECTED)) {
-                    assessment.status
-                } else it.ingestStatus
+                ingestStatus = if (it.state in setOf(PUBLISHING, MEDIA_FLOWING)) assessment.status else it.ingestStatus
             )
         }
         applyIngestAssessment(assessment)
@@ -680,17 +741,39 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
 
     private fun applyIngestAssessment(assessment: IngestAssessment) {
         val current = mutableSnapshot.value.state
-        if (current !in setOf(PUBLISHING, MEDIA_FLOWING, INGEST_CONNECTED)) return
-        val next = when {
-            assessment.connected -> INGEST_CONNECTED
-            assessment.mediaFlowing -> MEDIA_FLOWING
-            else -> PUBLISHING
-        }
+        if (current !in setOf(PUBLISHING, MEDIA_FLOWING)) return
+        val next = if (assessment.mediaFlowing) MEDIA_FLOWING else PUBLISHING
         if (next != current) {
-            updateState(next, engine = "ENCODING", rtmp = "PUBLISHING", ingest = assessment.status)
+            updateState(next, engine = "ENCODING", rtmp = "PUBLISH ACCEPTED", ingest = assessment.status)
         } else {
             setSnapshot { it.copy(ingestStatus = assessment.status) }
         }
+    }
+
+    private fun attemptVideoPackets(active: RtmpStream): Long {
+        val client = active.getStreamClient() as? RtmpStreamClient
+        return ((client?.getSentVideoPackets() ?: 0L) - attemptVideoPacketBaseline).coerceAtLeast(0L)
+    }
+
+    private fun attemptAudioPackets(active: RtmpStream): Long {
+        val client = active.getStreamClient() as? RtmpStreamClient
+        return ((client?.getSentAudioPackets() ?: 0L) - attemptAudioPacketBaseline).coerceAtLeast(0L)
+    }
+
+    private fun mediaPipelineEvidence(active: RtmpStream, request: StreamRequest): MediaPipelineEvidence {
+        val client = active.getStreamClient() as? RtmpStreamClient
+        return MediaPipelineEvidence(
+            decodedVideoFrames = (active.getDecodedSourceVideoFrames() - attemptSourceVideoBaseline).coerceAtLeast(0L),
+            encodedVideoFrames = (active.getEncodedVideoFrames() - attemptEncodedVideoBaseline).coerceAtLeast(0L),
+            h264ConfigWrites = ((client?.getSentVideoCodecConfigs() ?: 0L) - attemptVideoConfigBaseline).coerceAtLeast(0L),
+            videoPacketWrites = ((client?.getSentVideoPackets() ?: 0L) - attemptVideoPacketBaseline).coerceAtLeast(0L),
+            keyframeWrites = ((client?.getSentVideoKeyframes() ?: 0L) - attemptKeyframeBaseline).coerceAtLeast(0L),
+            decodedAudioFrames = (active.getDecodedSourceAudioFrames() - attemptSourceAudioBaseline).coerceAtLeast(0L),
+            encodedAudioFrames = (active.getEncodedAudioFrames() - attemptEncodedAudioBaseline).coerceAtLeast(0L),
+            aacConfigWrites = ((client?.getSentAudioCodecConfigs() ?: 0L) - attemptAudioConfigBaseline).coerceAtLeast(0L),
+            audioPacketWrites = ((client?.getSentAudioPackets() ?: 0L) - attemptAudioPacketBaseline).coerceAtLeast(0L),
+            audioExpected = request.videoAsset.hasAudio
+        )
     }
 
     override fun onNewBitrate(bitrate: Long) {
@@ -709,6 +792,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             } else {
                 "Audio encoder initialization failed for this video's audio track."
             })
+            stopTransportAfterTerminalFailure()
         }
     }
 
@@ -724,6 +808,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             } else {
                 "The audio encoder stopped unexpectedly."
             })
+            stopTransportAfterTerminalFailure()
         }
         return true
     }
@@ -755,7 +840,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 errorMessage = null,
                 engineStatus = "PREPARING",
                 rtmpStatus = "DISCONNECTED",
-                ingestStatus = "INGEST: NOT CONNECTED",
+                ingestStatus = "RTMP NOT CONNECTED",
                 width = null,
                 height = null,
                 actualFps = null,
@@ -862,7 +947,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     errorMessage = null,
                     engineStatus = "READY",
                     rtmpStatus = "DISCONNECTED",
-                    ingestStatus = "INGEST: NOT CONNECTED",
+                    ingestStatus = "RTMP NOT CONNECTED",
                     width = request.canvas().width,
                     height = request.canvas().height,
                     targetFps = request.fps,
@@ -889,7 +974,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                     errorMessage = friendlyError(e.message.orEmpty()),
                     engineStatus = "ERROR",
                     rtmpStatus = "DISCONNECTED",
-                    ingestStatus = "INGEST: NOT CONNECTED",
+                    ingestStatus = "RTMP NOT CONNECTED",
                     sourceStatus = "ERROR",
                     videoEncoderStatus = if (e.message.orEmpty().contains("video", true) || e.message.orEmpty().contains("encoder", true)) "ERROR" else "NOT READY",
                     audioEncoderStatus = if (!request.videoAsset.hasAudio) "NOT USED" else if (e.message.orEmpty().contains("audio", true)) "ERROR" else "NOT READY"
@@ -958,24 +1043,109 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             if (active != null && request != null) {
                 sampleMetrics(active, request, now)
                 val state = mutableSnapshot.value.state
-                if (state == PUBLISHING || state == MEDIA_FLOWING || state == INGEST_CONNECTED) {
-                    val frames = active.getEncodedVideoFrames()
-                    val bytes = (active.getStreamClient() as? RtmpStreamClient)?.getSuccessfulMediaBytes() ?: 0L
-                    if (frames > lastEncodedFrames) {
-                        lastEncodedFrames = frames
-                        lastVideoProgressMs = now
-                    } else if (now - lastVideoProgressMs > ENCODER_STALL_MS) {
-                        fail("ENCODER_STALLED", "The video encoder stopped producing frames. Stop Live and try again.")
+                when (state) {
+                    CONNECTING, RTMP_HANDSHAKE -> {
+                        if (attemptStartedAtMs > 0L && now - attemptStartedAtMs > PROTOCOL_ATTEMPT_TIMEOUT_MS) {
+                            val handshakePending = mutableSnapshot.value.handshakeStatus != "SUCCEEDED"
+                            failAndStopMedia(
+                                if (handshakePending) "RTMP_HANDSHAKE_TIMEOUT" else "RTMP_CONNECT_TIMEOUT",
+                                if (handshakePending) "RTMP HANDSHAKE" else "RTMP CONNECT",
+                                if (handshakePending) {
+                                    "The RTMP handshake did not complete before the protocol timeout."
+                                } else {
+                                    "RTMP handshake completed, but the server did not accept the RTMP connect request."
+                                }
+                            )
+                        }
                     }
-                    if (bytes > lastTransportBytes) {
-                        lastTransportBytes = bytes
-                        lastTransportProgressMs = now
-                    } else if (frames > 0 && now - lastTransportProgressMs > TRANSPORT_STALL_MS) {
-                        scheduleReconnect("RTMP transport stopped sending data", request)
+                    RTMP_CONNECTED -> {
+                        val nowSinceAttempt = now - attemptStartedAtMs
+                        when {
+                            publishRequestAtMs > 0L && now - publishRequestAtMs > PUBLISH_RESPONSE_TIMEOUT_MS -> {
+                                failAndStopMedia(
+                                    "RTMP_PUBLISH_RESPONSE_TIMEOUT",
+                                    "RTMP PUBLISH",
+                                    "The publish command was sent, but NetStream.Publish.Start was not received. Publish was not confirmed."
+                                )
+                            }
+                            publishRequestAtMs == 0L && nowSinceAttempt > PROTOCOL_ATTEMPT_TIMEOUT_MS -> {
+                                failAndStopMedia(
+                                    "RTMP_CREATE_STREAM_TIMEOUT",
+                                    "RTMP CREATE STREAM / PUBLISH",
+                                    "RTMP connect was accepted, but the server did not complete createStream and send the publish request."
+                                )
+                            }
+                        }
                     }
-                    considerAdaptiveBitrate(active, request, now)
-                } else if (state == RECONNECTING && networkConnected == true && !retryPending.get()) {
-                    scheduleReconnect("Network restored", request)
+                    PUBLISHING, MEDIA_FLOWING -> {
+                        val assessment = assessIngest(active, request)
+                        val publishedAt = publishAcceptedAtMs
+                        if (publishedAt > 0L && now - publishedAt >= MEDIA_STARTUP_TIMEOUT_MS && !assessment.localMediaReady) {
+                            val failure = MediaPipelineDiagnosis.firstFailure(mediaPipelineEvidence(active, request))
+                            val actual = failure ?: MediaPipelineFailure(
+                                "MEDIA_READINESS_TIMEOUT",
+                                "MEDIA PACKET READINESS",
+                                "The required local video/audio packet evidence did not become ready after publish acceptance."
+                            )
+                            failAndStopMedia(actual.code, actual.stage, actual.detail)
+                        } else {
+                            val currentAttemptVideoPackets = attemptVideoPackets(active)
+                            val currentAttemptAudioPackets = attemptAudioPackets(active)
+                            val rtmpClient = active.getStreamClient() as? RtmpStreamClient
+                            val videoLastAt = rtmpClient?.getLastVideoPacketAtMs() ?: 0L
+                            val keyframeLastAt = rtmpClient?.getLastVideoKeyframeAtMs() ?: 0L
+                            val audioLastAt = rtmpClient?.getLastAudioPacketAtMs() ?: 0L
+                            val currentAttemptKeyframes = ((rtmpClient?.getSentVideoKeyframes() ?: 0L) - attemptKeyframeBaseline).coerceAtLeast(0L)
+                            if (currentAttemptVideoPackets > 0L && videoLastAt > 0L && now - videoLastAt > MEDIA_PACKET_STALL_MS) {
+                                failAndStopMedia(
+                                    "MEDIA_VIDEO_PACKET_STALLED",
+                                    "VIDEO PACKET FLOW",
+                                    "Video packet writes stopped; the last successful video packet was ${now - videoLastAt} ms ago."
+                                )
+                            } else if (request.videoAsset.hasAudio && currentAttemptAudioPackets > 0L &&
+                                audioLastAt > 0L && now - audioLastAt > MEDIA_PACKET_STALL_MS) {
+                                failAndStopMedia(
+                                    "MEDIA_AUDIO_PACKET_STALLED",
+                                    "AUDIO PACKET FLOW",
+                                    "Audio packet writes stopped; the last successful audio packet was ${now - audioLastAt} ms ago."
+                                )
+                            } else if (currentAttemptKeyframes > 0L && keyframeLastAt > 0L &&
+                                now - keyframeLastAt > KEYFRAME_STALL_MS) {
+                                failAndStopMedia(
+                                    "MEDIA_KEYFRAME_STALLED",
+                                    "H.264 KEYFRAME FLOW",
+                                    "Keyframe writes stopped; the last successful keyframe was ${now - keyframeLastAt} ms ago."
+                                )
+                            } else {
+                                val frames = active.getEncodedVideoFrames()
+                                val attemptFrames = (frames - attemptEncodedVideoBaseline).coerceAtLeast(0L)
+                                val bytes = (rtmpClient?.getSuccessfulMediaBytes() ?: 0L)
+                                if (attemptFrames > 0L && frames > lastEncodedFrames) {
+                                    lastEncodedFrames = frames
+                                    lastVideoProgressMs = now
+                                } else if (attemptFrames > 0L && now - lastVideoProgressMs > ENCODER_STALL_MS) {
+                                    failAndStopMedia(
+                                        "MEDIA_H264_ENCODER_STALLED",
+                                        "H.264 ENCODER",
+                                        "The H.264 encoder stopped producing new output frames."
+                                    )
+                                }
+                                if (bytes > lastTransportBytes) {
+                                    lastTransportBytes = bytes
+                                    lastTransportProgressMs = now
+                                } else if (attemptFrames > 0L && now - lastTransportProgressMs > TRANSPORT_STALL_MS) {
+                                    scheduleReconnect("RTMP transport stopped sending data", request)
+                                }
+                                if (mutableSnapshot.value.state in setOf(PUBLISHING, MEDIA_FLOWING)) {
+                                    considerAdaptiveBitrate(active, request, now)
+                                }
+                            }
+                        }
+                    }
+                    RECONNECTING -> if (networkConnected == true && !retryPending.get()) {
+                        scheduleReconnect("Network restored", request)
+                    }
+                    else -> Unit
                 }
             }
             refreshDurationAndNotification(now)
@@ -1002,6 +1172,11 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         val rtmpClient = client as? RtmpStreamClient
         val sentVideoPackets = rtmpClient?.getSentVideoPackets()
         val sentAudioPackets = rtmpClient?.getSentAudioPackets()
+        val sentVideoBytes = rtmpClient?.getSentVideoBytes()
+        val sentAudioBytes = rtmpClient?.getSentAudioBytes()
+        val lastVideoPacketAt = rtmpClient?.getLastVideoPacketAtMs() ?: 0L
+        val lastVideoKeyframeAt = rtmpClient?.getLastVideoKeyframeAtMs() ?: 0L
+        val lastAudioPacketAt = rtmpClient?.getLastAudioPacketAtMs() ?: 0L
         val sentKeyframes = rtmpClient?.getSentVideoKeyframes()
         val videoConfigs = rtmpClient?.getSentVideoCodecConfigs() ?: 0L
         val audioConfigs = rtmpClient?.getSentAudioCodecConfigs() ?: 0L
@@ -1023,6 +1198,11 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 sentBytes = rtmpClient?.getSuccessfulMediaBytes() ?: client.getBytesSend(),
                 sentVideoPackets = sentVideoPackets,
                 sentAudioPackets = sentAudioPackets,
+                sentVideoBytes = sentVideoBytes,
+                sentAudioBytes = sentAudioBytes,
+                lastVideoPacketAgoMs = lastVideoPacketAt.takeIf { it > 0L }?.let { (now - it).coerceAtLeast(0L) },
+                lastVideoKeyframeAgoMs = lastVideoKeyframeAt.takeIf { it > 0L }?.let { (now - it).coerceAtLeast(0L) },
+                lastAudioPacketAgoMs = lastAudioPacketAt.takeIf { it > 0L }?.let { (now - it).coerceAtLeast(0L) },
                 sentKeyframes = sentKeyframes,
                 h264ConfigSent = videoConfigs > 0,
                 aacConfigSent = audioConfigs > 0,
@@ -1087,7 +1267,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 errorMessage = null,
                 engineStatus = "ENCODING",
                 rtmpStatus = "RECONNECTING",
-                ingestStatus = if (it.ingestStatus.contains("FAILED", true)) it.ingestStatus else "INGEST: RECONNECTING",
+                ingestStatus = if (it.ingestStatus.contains("FAILED", true)) it.ingestStatus else "RTMP RECONNECTING",
                 reconnectCount = reconnectCount
             )
         }
@@ -1122,7 +1302,7 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
             }
             withContext(Dispatchers.Main.immediate) {
                 val ingest = mutableSnapshot.value.ingestStatus.let {
-                    if (it.contains("FAILED", true)) it else "INGEST: RECONNECTING"
+                    if (it.contains("FAILED", true)) it else "RTMP RECONNECTING"
                 }
                 updateState(RECONNECTING, engine = "ENCODING", rtmp = "RECONNECTING", ingest = ingest)
             }
@@ -1193,8 +1373,55 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         }
     }
 
+    /** Freeze the session clock and stop the RTMP stream when required media never starts/stalls. */
+    private fun failAndStopMedia(code: String, stage: String, detail: String) {
+        if (isStopping || mutableSnapshot.value.state in setOf(ERROR, STOPPING, STOPPED)) return
+        val now = SystemClock.elapsedRealtime()
+        val elapsed = sessionStartElapsedMs?.let { (now - it).coerceAtLeast(0L) }
+            ?: mutableSnapshot.value.elapsedMs
+        isStopping = true
+        retryPending.set(false)
+        publishAcceptedAtMs = 0L
+        sessionStartElapsedMs = null
+        releaseWakeLock()
+        SafeDiagnostics.failure(code)
+        transition(ERROR)
+        setSnapshot {
+            it.copy(
+                state = ERROR,
+                statusText = "ERROR",
+                errorMessage = "$stage: $detail",
+                pipelineFailureStage = stage,
+                engineStatus = if (stage.contains("ENCODER", true) || stage.contains("DECODER", true)) "ERROR" else it.engineStatus,
+                rtmpStatus = "STOPPED AFTER MEDIA FAILURE",
+                ingestStatus = "MEDIA PIPELINE FAILED: $stage",
+                elapsedMs = elapsed,
+                startedAtElapsedMs = null
+            )
+        }
+        updateNotification()
+        val active = stream
+        serviceScope.launch(Dispatchers.IO) {
+            runCatching {
+                if (active?.stopStream() == false) active.release()
+            }.onFailure {
+                SafeDiagnostics.event("MEDIA_FAILURE_STOP_FAILED")
+                runCatching { active?.release() }
+            }
+            withContext(Dispatchers.Main.immediate) {
+                isStopping = false
+                updateNotification()
+            }
+        }
+    }
+
     private fun fail(code: String, message: String) {
         retryPending.set(false)
+        val now = SystemClock.elapsedRealtime()
+        val startedAt = sessionStartElapsedMs
+        val finalElapsed = startedAt?.let { (now - it).coerceAtLeast(0L) } ?: mutableSnapshot.value.elapsedMs
+        sessionStartElapsedMs = null
+        releaseWakeLock()
         SafeDiagnostics.failure(code)
         val current = mutableSnapshot.value.state
         if (current !in setOf(ERROR, STOPPING, STOPPED)) transition(ERROR)
@@ -1205,23 +1432,42 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
                 errorMessage = message,
                 engineStatus = when {
                     code.startsWith("ENCODER") || code.startsWith("MEDIA_CODEC") -> "ERROR"
-                    sessionStartElapsedMs != null && it.sourceStatus == "READY" -> "ENCODING"
+                    startedAt != null && it.sourceStatus == "READY" -> "ENCODING"
                     it.sourceStatus == "READY" -> "READY"
                     else -> "ERROR"
                 },
                 rtmpStatus = "ERROR",
                 ingestStatus = when {
-                    code.contains("HANDSHAKE", true) -> "INGEST: HANDSHAKE FAILED"
-                    code.contains("PUBLISH", true) -> "INGEST: PUBLISH FAILED"
-                    code.contains("CONNECT", true) || code.contains("AUTH", true) -> "INGEST: CONNECT FAILED"
+                    code.contains("HANDSHAKE", true) -> "RTMP HANDSHAKE FAILED"
+                    code.contains("PUBLISH", true) -> "RTMP PUBLISH FAILED"
+                    code.contains("CONNECT", true) || code.contains("AUTH", true) -> "RTMP CONNECT FAILED"
                     it.ingestStatus.contains("FAILED", true) -> it.ingestStatus
-                    it.publishStatus == "ACCEPTED" -> "INGEST: DISCONNECTED"
-                    else -> "INGEST: NOT CONNECTED"
+                    it.publishStatus == "ACCEPTED" -> "RTMP DISCONNECTED"
+                    else -> "RTMP NOT CONNECTED"
                 },
-                reconnectCount = reconnectCount
+                reconnectCount = reconnectCount,
+                elapsedMs = finalElapsed,
+                startedAtElapsedMs = null
             )
         }
         updateNotification()
+    }
+
+    private fun stopTransportAfterTerminalFailure() {
+        val active = stream ?: return
+        serviceScope.launch {
+            val prepared = withContext(Dispatchers.IO) {
+                runCatching { active.stopStream() }.getOrDefault(false)
+            }
+            if (!prepared) {
+                withContext(Dispatchers.IO) { runCatching { active.release() } }
+                if (stream === active) {
+                    stream = null
+                    activeRequestFingerprint = null
+                    previewTarget = null
+                }
+            }
+        }
     }
 
     private fun setSnapshot(change: (SessionSnapshot) -> SessionSnapshot) {
@@ -1289,12 +1535,13 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         val duration = formatDuration(snapshot.elapsedMs)
         val title = "MIHAD LIVE"
         val body = when (snapshot.state) {
-            PUBLISHING -> "RTMP publish requested — $duration"
-            MEDIA_FLOWING -> "RTMP media flowing — $duration"
-            INGEST_CONNECTED -> "RTMP ingest connected — $duration"
-            LIVE -> "LIVE — $duration"
-            RECONNECTING -> "Reconnecting — $duration"
-            CONNECTING_TO_YOUTUBE, RTMP_HANDSHAKE -> "Connecting — $duration"
+            RTMP_CONNECTED -> "RTMP connected — waiting for publish acceptance — $duration"
+            PUBLISHING -> "RTMP PUBLISHING — $duration"
+            MEDIA_FLOWING -> "Local RTMP media writes flowing — $duration"
+            YOUTUBE_INGEST_DETECTED -> "YouTube ingest detected — $duration"
+            LIVE -> "YouTube broadcast LIVE — $duration"
+            RECONNECTING -> "Reconnecting — session time ${duration}; not proof of YouTube receipt"
+            CONNECTING, RTMP_HANDSHAKE -> "Connecting — $duration"
             STOPPING -> "Stopping stream…"
             ERROR -> snapshot.errorMessage ?: "Stream needs attention"
             else -> "Preparing live stream"
@@ -1421,11 +1668,12 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         IDLE -> "READY"
         PREPARING -> "PREPARING"
         ENCODER_READY -> "ENGINE READY"
-        CONNECTING_TO_YOUTUBE -> "CONNECTING TO YOUTUBE"
+        CONNECTING -> "CONNECTING"
         RTMP_HANDSHAKE -> "RTMP HANDSHAKE"
-        PUBLISHING -> "PUBLISHING"
+        RTMP_CONNECTED -> "RTMP CONNECTED"
+        PUBLISHING -> "RTMP PUBLISHING"
         MEDIA_FLOWING -> "MEDIA FLOWING"
-        INGEST_CONNECTED -> "INGEST CONNECTED"
+        YOUTUBE_INGEST_DETECTED -> "YOUTUBE INGEST DETECTED"
         LIVE -> "LIVE"
         RECONNECTING -> "RECONNECTING"
         STOPPING -> "STOPPING"
@@ -1449,6 +1697,11 @@ class StreamService : Service(), ConnectChecker, CodecErrorCallback {
         private const val MAX_BACKOFF_MS = 30_000L
         private const val NETWORK_WAIT_LIMIT_MS = 5 * 60_000L
         private const val SOCKET_TIMEOUT_MS = 15_000L
+        private const val PROTOCOL_ATTEMPT_TIMEOUT_MS = 25_000L
+        private const val PUBLISH_RESPONSE_TIMEOUT_MS = 15_000L
+        private const val MEDIA_STARTUP_TIMEOUT_MS = 15_000L
+        private const val MEDIA_PACKET_STALL_MS = 10_000L
+        private const val KEYFRAME_STALL_MS = 10_000L
         private const val ENCODER_STALL_MS = 10_000L
         private const val TRANSPORT_STALL_MS = 18_000L
         private const val ADAPTIVE_INTERVAL_MS = 20_000L

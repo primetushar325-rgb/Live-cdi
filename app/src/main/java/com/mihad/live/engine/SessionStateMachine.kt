@@ -20,31 +20,35 @@ class SessionStateMachine(initial: StreamState = StreamState.IDLE) {
             StreamState.IDLE to setOf(StreamState.PREPARING, StreamState.STOPPED, StreamState.ERROR),
             StreamState.PREPARING to setOf(StreamState.ENCODER_READY, StreamState.ERROR, StreamState.STOPPING),
             StreamState.ENCODER_READY to setOf(
-                StreamState.PREPARING, StreamState.CONNECTING_TO_YOUTUBE,
+                StreamState.PREPARING, StreamState.CONNECTING,
                 StreamState.STOPPING, StreamState.ERROR, StreamState.STOPPED
             ),
-            StreamState.CONNECTING_TO_YOUTUBE to setOf(
-                StreamState.RTMP_HANDSHAKE, StreamState.PUBLISHING, StreamState.RECONNECTING,
+            StreamState.CONNECTING to setOf(
+                StreamState.RTMP_HANDSHAKE, StreamState.RTMP_CONNECTED, StreamState.RECONNECTING,
                 StreamState.STOPPING, StreamState.ERROR
             ),
             StreamState.RTMP_HANDSHAKE to setOf(
-                StreamState.CONNECTING_TO_YOUTUBE, StreamState.PUBLISHING,
-                StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
-            ),
-            StreamState.PUBLISHING to setOf(
-                StreamState.MEDIA_FLOWING, StreamState.INGEST_CONNECTED, StreamState.RECONNECTING,
+                StreamState.CONNECTING, StreamState.RTMP_CONNECTED, StreamState.RECONNECTING,
                 StreamState.STOPPING, StreamState.ERROR
             ),
-            StreamState.MEDIA_FLOWING to setOf(
-                StreamState.INGEST_CONNECTED, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
+            StreamState.RTMP_CONNECTED to setOf(
+                StreamState.PUBLISHING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
             ),
-            StreamState.INGEST_CONNECTED to setOf(
+            StreamState.PUBLISHING to setOf(
                 StreamState.MEDIA_FLOWING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
+            ),
+            // Local packet writes cannot enter YOUTUBE_INGEST_DETECTED; no official YouTube
+            // receipt/broadcast API is configured in this build.
+            StreamState.MEDIA_FLOWING to setOf(
+                StreamState.PUBLISHING, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
+            ),
+            StreamState.YOUTUBE_INGEST_DETECTED to setOf(
+                StreamState.LIVE, StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR
             ),
             StreamState.LIVE to setOf(StreamState.RECONNECTING, StreamState.STOPPING, StreamState.ERROR),
             StreamState.RECONNECTING to setOf(
-                StreamState.CONNECTING_TO_YOUTUBE, StreamState.RTMP_HANDSHAKE, StreamState.PUBLISHING,
-                StreamState.MEDIA_FLOWING, StreamState.INGEST_CONNECTED,
+                StreamState.CONNECTING, StreamState.RTMP_HANDSHAKE, StreamState.RTMP_CONNECTED,
+                StreamState.PUBLISHING, StreamState.MEDIA_FLOWING,
                 StreamState.STOPPING, StreamState.ERROR
             ),
             StreamState.STOPPING to setOf(StreamState.STOPPED, StreamState.ERROR),
