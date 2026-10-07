@@ -111,7 +111,7 @@ internal fun Context.scrollColumn(paddingDp: Int = 22): Pair<ScrollView, LinearL
     val scroll = ScrollView(this).apply {
         isFillViewport = false
         clipToPadding = false
-        addView(column, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        addView(column, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
     }
     return scroll to column
 }

@@ -642,7 +642,7 @@ class MainActivity : AppCompatActivity() {
         column.addView(choiceRow("FRAME RATE", "$fps FPS") { chooseFps() })
         val bitrateSummary = when (bitrateMode) {
             BitrateMode.AUTO -> "Auto · conservative adaptation"
-            BitrateMode.RECOMMENDED -> "Recommended · ${formatRate(customOrRecommended())} target"
+            BitrateMode.RECOMMENDED -> "Recommended · ${formatRate(customOrRecommended().toLong())} target"
             BitrateMode.CUSTOM -> "Custom · ${formatRate(bitrateFor(quality).toLong())} target"
         }
         column.addView(choiceRow("BITRATE", bitrateSummary) { chooseBitrate() })
@@ -766,7 +766,7 @@ class MainActivity : AppCompatActivity() {
             setHintTextColor(colorResource(R.color.ml_text_muted))
             setPadding(dp(12), dp(14), dp(12), dp(14))
         }
-        layout.addView(edit, TextInputLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        layout.addView(edit, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return layout to edit
     }
 
@@ -1354,5 +1354,4 @@ class MainActivity : AppCompatActivity() {
 
     private fun Float.formatOne(): String = String.format(Locale.US, "%.1f", this)
 
-    private fun TextView.colorResource(id: Int) = setTextColor(ContextCompat.getColor(this@MainActivity, id))
 }
